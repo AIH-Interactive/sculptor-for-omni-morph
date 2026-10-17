@@ -47,8 +47,16 @@ pub async fn session(State(state): State<AppState>, headers: HeaderMap) -> Resul
         .get_by_uuid(&actor.uuid)
         .map(|user| user.nickname.clone())
         .ok_or(ErrorCode::Unauthenticated)?;
+    let storage = state.storage.clone();
+    let equipment_revision = blocking(move || {
+        storage
+            .equipped(actor.uuid)
+            .map(|equipment| equipment.revision)
+    })
+    .await?;
     json_response(
-        json!({"uuid": actor.uuid.to_string(), "name": name, "admin": actor.admin_context}),
+        json!({"uuid": actor.uuid.to_string(), "name": name, "admin": actor.admin_context,
+            "equipment_revision": equipment_revision}),
     )
 }
 

@@ -14,6 +14,18 @@ MANUAL/PENDING. Frozen Protobuf v1 field numbers remain unchanged.
 ## Identity and request envelope
 
 Every business route, including capabilities, requires a verified player.
+
+M4 client integration adds `equipment_revision` to the existing `GET session`
+JSON response, alongside uuid/name/admin. It is the authenticated player's
+current equipment revision, read on the bounded worker pool, so both Figura
+and Protobuf clients can submit library equip CAS without guessing from a
+legacy profile. No target UUID parameter, new route, migration or frozen
+Protobuf field is introduced. The API test verifies 0 before equipment, 1
+after equipment, another player's independent 0 and conflict on the stale
+revision. M4 validation passed: cargo build, the full 76-test suite and the
+separate worker-saturation test. Actual game/deployment acceptance remains
+MANUAL/PENDING.
+
 Protobuf requests use `Authorization: Bearer <session>` and
 `x-omnimorph-epoch: <u64>`, validated by `api::protobuf::file_scope`.
 Figura requests use `x-omnimorph-auth-mode: figura` and

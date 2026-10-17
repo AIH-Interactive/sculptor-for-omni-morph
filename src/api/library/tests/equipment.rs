@@ -9,6 +9,43 @@ fn equip_input(revision: u64) -> Value {
 }
 
 #[tokio::test]
+async fn session_exposes_only_the_authenticated_players_current_equipment_revision() {
+    let server = Server::start().await;
+    let read = |player| server.request(Method::GET, "/api/library/v1/session", player);
+    let initial = read(1).send().await.unwrap().json::<Value>().await.unwrap();
+    assert_eq!(initial["equipment_revision"], 0);
+    assert_eq!(initial["uuid"], Uuid::from_u128(1).to_string());
+    let (id, _) = server.upload_model("PRIVATE").await;
+    let path = format!("/api/library/v1/models/{id}/equip");
+    assert_eq!(
+        server
+            .request(Method::POST, &path, 1)
+            .json(&equip_input(0))
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        200
+    );
+    let equipped = read(1).send().await.unwrap().json::<Value>().await.unwrap();
+    assert_eq!(equipped["equipment_revision"], 1);
+    let other = read(2).send().await.unwrap().json::<Value>().await.unwrap();
+    assert_eq!(other["equipment_revision"], 0);
+    assert_eq!(other["uuid"], Uuid::from_u128(2).to_string());
+    assert!(other.get("model_id").is_none());
+    assert_eq!(
+        server
+            .request(Method::POST, &path, 1)
+            .json(&equip_input(0))
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        409
+    );
+}
+
+#[tokio::test]
 async fn legacy_download_uses_source_equipment_instead_of_a_stale_temporary_slot() {
     let server = Server::start().await;
     let player = Uuid::from_u128(99);
