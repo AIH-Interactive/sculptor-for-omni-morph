@@ -161,7 +161,7 @@ async fn legacy_http_baseline() {
         .nest("/api", crate::legacy_api(1024))
         .route("/api/", get(crate::check_auth))
         .route("/ws", get(crate::api::figura::ws))
-        .merge(crate::api::protobuf::router())
+        .merge(crate::api::protobuf::router(true))
         .with_state(state.clone())
         .layer(axum::middleware::from_fn_with_state(
             capture.clone(),

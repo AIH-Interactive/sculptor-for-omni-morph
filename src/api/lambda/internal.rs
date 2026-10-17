@@ -117,7 +117,7 @@ where
             .headers
             .get("host")
             .and_then(|value| value.to_str().ok());
-        trace!(token = ?host);
+        trace!(present = host.is_some(), "Internal host header inspected");
         match host {
             Some(host) => Ok(Self(host.to_string())),
             None => Err(StatusCode::NOT_FOUND),

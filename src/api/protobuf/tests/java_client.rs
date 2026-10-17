@@ -4,11 +4,9 @@ use std::{path::Path, process::Stdio, time::Duration};
 use uuid::Uuid;
 
 pub(crate) async fn integration(base: &str, state: &AppState, figura: &[u8]) {
-    let Ok(classpath_file) = std::env::var("OMNIMORPH_CLIENT_CLASSPATH_FILE") else {
+    if std::env::var_os("OMNIMORPH_CLIENT_CLASSPATH_FILE").is_none() {
         return;
-    };
-    let classpath =
-        std::fs::read_to_string(classpath_file).expect("Java integration classpath file");
+    }
     let fixtures = tempfile::tempdir().unwrap();
     std::fs::write(fixtures.path().join("figura.bin"), figura).unwrap();
     for (name, encrypted) in [("plain", false), ("encrypted", true)] {
@@ -40,16 +38,31 @@ pub(crate) async fn integration(base: &str, state: &AppState, figura: &[u8]) {
         prerelease: "0.1.5".into(),
     });
     let arguments = [
-        "-cp".to_string(),
-        classpath.trim().to_string(),
         "org.figuramc.figura.backend2.protocol.CloudAdapterIntegrationTest".to_string(),
         base.to_string(),
         fixtures.path().to_string_lossy().into_owned(),
         owner.to_string(),
         observer.to_string(),
     ];
-    let argument_file = fixtures.path().join("java.args");
-    let quoted = arguments
+    execute(&arguments, fixtures.path()).await;
+    tokio::time::timeout(Duration::from_secs(2), async {
+        while state.session.count(owner) != 0 || state.session.count(observer) != 0 {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("Java adapter sockets must clean up their sessions");
+}
+
+pub(crate) async fn execute(arguments: &[String], directory: &Path) {
+    let classpath_file =
+        std::env::var("OMNIMORPH_CLIENT_CLASSPATH_FILE").expect("Java classpath gate enabled");
+    let classpath =
+        std::fs::read_to_string(classpath_file).expect("Java integration classpath file");
+    let mut complete = vec!["-cp".to_string(), classpath.trim().to_string()];
+    complete.extend_from_slice(arguments);
+    let argument_file = directory.join("java.args");
+    let quoted = complete
         .iter()
         .map(|argument| {
             format!(
@@ -80,11 +93,4 @@ pub(crate) async fn integration(base: &str, state: &AppState, figura: &[u8]) {
         status.success(),
         "production Java adapter integration failed"
     );
-    tokio::time::timeout(Duration::from_secs(2), async {
-        while state.session.count(owner) != 0 || state.session.count(observer) != 0 {
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
-    })
-    .await
-    .expect("Java adapter sockets must clean up their sessions");
 }

@@ -34,7 +34,7 @@ where
             .headers
             .get("token")
             .and_then(|value| value.to_str().ok());
-        trace!(token = ?token);
+        trace!(present = token.is_some(), "Authentication header inspected");
         match token {
             Some(token) => Ok(Self(token.to_string())),
             None => Err(StatusCode::UNAUTHORIZED),
@@ -46,15 +46,14 @@ where
 // Work with external APIs
 /// Get UUID from JSON response
 fn get_id_json(json: &serde_json::Value) -> Result<Uuid, uuid::Error> {
-    trace!("json: {json:#?}"); // For debugging, we'll get to this later!
     let uuid = Uuid::parse_str(json.get("id").unwrap().as_str().unwrap())?;
     Ok(uuid)
 }
 
 #[derive(Debug, Error)]
 enum FetchError {
-    #[error("invalid response code (expected 200), found {0}.\n    Response: {1:#?}")]
-    WrongResponse(u16, Result<String, reqwest::Error>),
+    #[error("authentication provider returned HTTP {0}")]
+    WrongResponse(u16),
     #[error(transparent)]
     SendError(#[from] reqwest::Error),
     #[error(transparent)]
@@ -86,7 +85,7 @@ async fn fetch_json(
         .query(&query)
         .send()
         .await?;
-    trace!("{res:?}");
+    trace!(status = res.status().as_u16(), "Authentication provider responded");
     match res.status().as_u16() {
         200 => {
             let json = serde_json::from_str::<serde_json::Value>(&res.text().await?).with_context(|| "Cant deserialize".to_string())?;
@@ -98,7 +97,7 @@ async fn fetch_json(
             state.user_manager.put_upload_state(uuid, can_upload);
             Ok((uuid, auth_provider.clone()))
         }
-        _ => Err(FetchError::WrongResponse(res.status().as_u16(), res.text().await)),
+        _ => Err(FetchError::WrongResponse(res.status().as_u16())),
     }
 }
 
@@ -130,9 +129,9 @@ pub async fn has_joined(
                 Ok(data) => return Ok(Some(data)),
                 Err(err) => {
                     match err {
-                        FetchError::WrongResponse(code, data) => misses.push((code, data)),
-                        FetchError::SendError(err) => errors.push(err.to_string()),
-                        FetchError::Other(err) => errors.push(err.to_string()),
+                        FetchError::WrongResponse(code) => misses.push(code),
+                        FetchError::SendError(_) => errors.push("provider_transport"),
+                        FetchError::Other(_) => errors.push("provider_response"),
                     }
                 },
             }
@@ -147,12 +146,12 @@ pub async fn has_joined(
 
     // Returns if some internals errors occured
     if !errors.is_empty() {
-        error!("Something wrong with your authentification providers!\nMisses: {misses:?}\nErrors: {errors:?}");
-        Err(anyhow::anyhow!("{:?}", errors))
+        error!(misses = misses.len(), errors = errors.len(), "Authentication providers failed");
+        Err(anyhow::anyhow!("Authentication providers failed"))
         
     } else {
         // Returning if user can't be authenticated
-        debug!("Misses: {misses:?}");
+        debug!(misses = misses.len(), "Authentication providers did not authenticate the user");
         Ok(None)
     }
 }
@@ -166,7 +165,7 @@ async fn fetch_and_send(
     tx: tokio::sync::mpsc::Sender<Result<(Uuid, AuthProvider), FetchError>>
 ) {
     let _ = tx.send(fetch_json(State(state), &provider, &server_id, &username, ip).await)
-        .await.map_err( |err| trace!("fetch_and_send error [note: ok res returned and mpsc clossed]: {err:?}"));
+        .await.map_err(|_| trace!("Authentication result receiver closed"));
 }
 
 // User manager

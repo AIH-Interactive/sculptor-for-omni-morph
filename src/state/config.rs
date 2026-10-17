@@ -12,6 +12,8 @@ pub struct Config {
     pub listen: String,
     pub token: Option<String>,
     pub assets_updater_enabled: bool,
+    #[serde(default = "protobuf_default")]
+    pub protobuf_enabled: bool,
     pub motd: CMotd,
     #[serde(default = "default_authproviders")]
     pub auth_providers: AuthProviders,
@@ -20,6 +22,10 @@ pub struct Config {
     pub mc_folder: PathBuf,
     #[serde(default)]
     pub advanced_users: HashMap<Uuid, AdvancedUsers>,
+}
+
+fn protobuf_default() -> bool {
+    true
 }
 
 #[derive(Deserialize, Clone, Debug, PartialEq)]

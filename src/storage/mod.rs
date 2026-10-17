@@ -10,6 +10,9 @@ use std::{
 };
 use uuid::Uuid;
 
+#[cfg(test)]
+mod tests;
+
 pub type Result<T> = std::result::Result<T, ErrorCode>;
 
 #[derive(Clone, Default, Deserialize, Serialize)]
@@ -99,6 +102,23 @@ impl Storage {
         if manifest.schema_version != 1 {
             return Err(ErrorCode::UnsupportedVersion);
         }
+        // Upload grants live in memory. After restart no previous .part can be committed.
+        // Never clean an unknown schema; keep immutable blobs from interrupted commits.
+        for entry in fs::read_dir(root.join("uploads")).map_err(|_| ErrorCode::Internal)? {
+            let entry = entry.map_err(|_| ErrorCode::Internal)?;
+            let path = entry.path();
+            let is_file = entry
+                .file_type()
+                .map_err(|_| ErrorCode::Internal)?
+                .is_file();
+            if is_file
+                && path
+                    .extension()
+                    .is_some_and(|extension| extension == "part")
+            {
+                fs::remove_file(path).map_err(|_| ErrorCode::Internal)?;
+            }
+        }
         let storage = Self {
             root,
             committed: Mutex::new(manifest),
@@ -150,6 +170,8 @@ impl Storage {
         file.write_all(&bytes).map_err(|_| ErrorCode::Internal)?;
         file.sync_all().map_err(|_| ErrorCode::Internal)?;
         drop(file);
+        #[cfg(test)]
+        tests::pause_before_replace(&self.root);
         fs::rename(path, self.root.join("manifest.json")).map_err(|_| ErrorCode::Internal)?;
         *committed = candidate;
         Ok(result)

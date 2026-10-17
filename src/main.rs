@@ -197,6 +197,7 @@ async fn app() -> Result<bool> {
     }
 
     let api = legacy_api(limit);
+    let protobuf_enabled = state.config.read().await.protobuf_enabled;
 
     let internal = Router::new()
         .route("/:uuid/temp", put(lambda_internal::temp_avatar))
@@ -210,10 +211,14 @@ async fn app() -> Result<bool> {
         .nest("/api", api)
         .route("/api/", get(check_auth))
         .route("/ws", get(ws))
-        .merge(api::protobuf::router())
+        .merge(api::protobuf::router(protobuf_enabled))
         .nest("/internal", internal)
         .with_state(state)
-        .layer(TraceLayer::new_for_http().on_request(()))
+        .layer(TraceLayer::new_for_http()
+            .make_span_with(|request: &axum::http::Request<_>| {
+                tracing::info_span!("cloud_http", method = %request.method())
+            })
+            .on_request(()))
         .route("/health", get(|| async { "ok" }));
 
     let listener = tokio::net::TcpListener::bind(listen).await?;

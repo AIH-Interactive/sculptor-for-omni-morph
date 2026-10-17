@@ -1,6 +1,10 @@
 ## Don't touch this if you running under Docker container
 listen = "0.0.0.0:6665"
 
+## Disable new Protobuf HTTP/resource/WS routes without deleting cloud-v1 data.
+## Restart the backend after changing this flag. Figura Cloud routes stay available.
+protobufEnabled = true
+
 ## Don't touch if you don't know what you're doing
 # token = "<random symbols>"
 

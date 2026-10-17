@@ -23,7 +23,10 @@ use prost::Message;
 pub const CONTENT_TYPE: &str = "application/x-protobuf";
 pub const SUBPROTOCOL: &str = "omnimorph.cloud.v1";
 
-pub fn router() -> Router<AppState> {
+pub fn router(enabled: bool) -> Router<AppState> {
+    if !enabled {
+        return Router::new();
+    }
     Router::new()
         .route("/api/protobuf/v1/capabilities", get(http::capabilities))
         .route(
