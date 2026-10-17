@@ -18,6 +18,7 @@ pub use api::errors::{ApiResult, ApiError};
 
 // API
 mod api;
+mod protocol;
 use api::{
     figura::{ws, info as api_info, profile as api_profile, auth as api_auth, assets as api_assets},
     lambda::{internal as lambda_internal, },
@@ -188,18 +189,7 @@ async fn app() -> Result<bool> {
         ));
     }
 
-    let api = Router::new()
-        .nest("//auth", api_auth::router()) // => /api//auth ¯\_(ツ)_/¯
-        .nest("//assets", api_assets::router())
-        .nest("/v1", api::v1::router(limit))
-        .route("/limits", get(api_info::limits))
-        .route("/version", get(api_info::version))
-        .route("/motd", get(api_info::motd))
-        .route("/equip", post(api_profile::equip_avatar))
-        .route("/:uuid", get(api_profile::user_info))
-        .route("/:uuid/avatar", get(api_profile::download_avatar))
-        .route("/avatar", put(api_profile::upload_avatar).layer(DefaultBodyLimit::max(limit)))
-        .route("/avatar", delete(api_profile::delete_avatar));
+    let api = legacy_api(limit);
 
     let internal = Router::new()
         .route("/:uuid/temp", put(lambda_internal::temp_avatar))
@@ -225,6 +215,22 @@ async fn app() -> Result<bool> {
         .await?;
     tracing::info!("Serve stopped.");
     Ok(false)
+}
+
+// Shared with baseline tests so they exercise the deployed route table.
+fn legacy_api(limit: usize) -> Router<AppState> {
+    Router::new()
+        .nest("//auth", api_auth::router()) // => /api//auth ¯\_(ツ)_/¯
+        .nest("//assets", api_assets::router())
+        .nest("/v1", api::v1::router(limit))
+        .route("/limits", get(api_info::limits))
+        .route("/version", get(api_info::version))
+        .route("/motd", get(api_info::motd))
+        .route("/equip", post(api_profile::equip_avatar))
+        .route("/:uuid", get(api_profile::user_info))
+        .route("/:uuid/avatar", get(api_profile::download_avatar))
+        .route("/avatar", put(api_profile::upload_avatar).layer(DefaultBodyLimit::max(limit)))
+        .route("/avatar", delete(api_profile::delete_avatar))
 }
 
 async fn shutdown_signal() {

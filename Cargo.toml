@@ -6,6 +6,7 @@ edition = "2021"
 publish = false
 
 [dependencies]
+prost = "=0.14.3"
 # Logging
 tracing-subscriber = { version = "0.3", features = ["env-filter", "chrono"] }
 tracing-appender = "0.2"
@@ -45,6 +46,11 @@ tokio = { version = "1.41", features = ["full"] }
 
 [dev-dependencies]
 cross = "0.2.5"
+tempfile = "=3.14.0"
+
+[build-dependencies]
+prost-build = "=0.14.3"
+protoc-bin-vendored = "=3.2.0"
 
 [workspace.metadata.cross.target.x86_64-unknown-linux-gnu]
 pre-build = [
