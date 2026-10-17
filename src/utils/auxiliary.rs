@@ -49,23 +49,32 @@ pub async fn update_advanced_users(
                 .iter()
                 .map( |(uuid, userdata)| {
                     (
-                    *uuid,
-                    Userinfo { 
-                        uuid: *uuid,
-                        nickname: userdata.username.clone(),
-                        banned: userdata.banned,
-                        ..Default::default()
-                    }
-                )})
+                        *uuid,
+                        Userinfo {
+                            uuid: *uuid,
+                            nickname: userdata.username.clone(),
+                            banned: userdata.banned,
+                            ..Default::default()
+                        },
+                    )
+                })
                 .collect();
-        
+
             for (uuid, userinfo) in users {
-                umanager.insert_user(uuid, userinfo.clone());
+                if let Err(error) = umanager.insert_user(uuid, userinfo.clone()) {
+                    tracing::error!(?error, "Account metadata update failed");
+                }
                 if userinfo.banned {
-                    umanager.ban(&userinfo);
-                    if let Some(tx) = sessions.get(&uuid) {let _ = tx.send(crate::api::figura::SessionMessage::Banned).await;}
+                    if let Err(error) = umanager.ban(&userinfo) {
+                        tracing::error!(?error, "Account metadata update failed");
+                    }
+                    if let Some(tx) = sessions.get(&uuid) {
+                        let _ = tx.send(crate::api::figura::SessionMessage::Banned).await;
+                    }
                 } else {
-                    umanager.unban(&uuid);
+                    if let Err(error) = umanager.unban(&uuid) {
+                        tracing::error!(?error, "Account metadata update failed");
+                    }
                 }
             }
         }
@@ -92,8 +101,12 @@ pub async fn update_bans_from_minecraft(
     }
 
     for player in &old_bans {
-        umanager.ban(&player.clone().into());
-        if let Some(tx) = sessions.get(&player.uuid) {let _ = tx.send(crate::api::figura::SessionMessage::Banned).await;}
+        if let Err(error) = umanager.ban(&player.clone().into()) {
+            tracing::error!(?error, "Account metadata update failed");
+        }
+        if let Some(tx) = sessions.get(&player.uuid) {
+            let _ = tx.send(crate::api::figura::SessionMessage::Banned).await;
+        }
     }
 
     let (tx, mut rx) = tokio::sync::mpsc::channel::<notify::Result<Event>>(1);
@@ -121,18 +134,37 @@ pub async fn update_bans_from_minecraft(
             let mut unban_names = unban.iter().map(|user| user.name.clone()).collect::<Vec<String>>().join(", ");
             if !unban.is_empty() {
                 for player in unban {
-                    umanager.unban(&player.uuid);
+                    if let Err(error) = umanager.unban(&player.uuid) {
+                        tracing::error!(?error, "Account metadata update failed");
+                    }
                 }
-            } else { unban_names = String::from("-")};
-            let ban: Vec<&BannedPlayer> = new_bans.iter().filter(|user| !old_bans.contains(user)).collect();
-            let mut ban_names = ban.iter().map(|user| user.name.clone()).collect::<Vec<String>>().join(", ");
+            } else {
+                unban_names = String::from("-")
+            };
+            let ban: Vec<&BannedPlayer> = new_bans
+                .iter()
+                .filter(|user| !old_bans.contains(user))
+                .collect();
+            let mut ban_names = ban
+                .iter()
+                .map(|user| user.name.clone())
+                .collect::<Vec<String>>()
+                .join(", ");
             if !ban.is_empty() {
                 for player in ban {
-                    umanager.ban(&player.clone().into());
-                    if let Some(tx) = sessions.get(&player.uuid) {let _ = tx.send(crate::api::figura::SessionMessage::Banned).await;}
+                    if let Err(error) = umanager.ban(&player.clone().into()) {
+                        tracing::error!(?error, "Account metadata update failed");
+                    }
+                    if let Some(tx) = sessions.get(&player.uuid) {
+                        let _ = tx.send(crate::api::figura::SessionMessage::Banned).await;
+                    }
                 }
-            } else { ban_names = String::from("-")};
-            tracing::info!("List of changes:\n    Banned: {ban_names}\n    Unbanned: {unban_names}");
+            } else {
+                ban_names = String::from("-")
+            };
+            tracing::info!(
+                "List of changes:\n    Banned: {ban_names}\n    Unbanned: {unban_names}"
+            );
             // Write new to old for next iteration
             old_bans = new_bans;
         }

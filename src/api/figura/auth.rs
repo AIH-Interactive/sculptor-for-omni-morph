@@ -92,13 +92,14 @@ async fn verify(
             ..Default::default()
         };
         match umanager.insert(uuid, server_id.clone(), userinfo.clone()) {
-            Ok(_) => {},
+            Ok(_) => {}
             Err(_) => {
-                umanager.remove(&uuid);
-                if umanager.insert(uuid, server_id.clone(), userinfo).is_err() {
-                    error!("Old token error after attempting to remove it! Unexpected behavior!");
-                    return (StatusCode::BAD_REQUEST, "second session detected".to_string()).into_response();
-                };
+                error!("Could not commit authenticated account metadata");
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "account storage unavailable".to_string(),
+                )
+                    .into_response();
             }
         }
         (StatusCode::OK, server_id.to_string()).into_response()

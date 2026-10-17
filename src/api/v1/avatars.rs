@@ -13,12 +13,9 @@ pub async fn upload_avatar(
 
     state.config.read().await.clone().verify_token(&token)?;
 
-    tracing::info!(
-        "trying to upload the avatar for {}",
-        uuid,
-    );
+    tracing::info!("trying to upload the avatar for {}", uuid,);
 
-    crate::service::resource::write_legacy(uuid, false, &request_data).await?;
+    crate::service::resource::write_legacy(&state, uuid, false, &request_data).await?;
     crate::service::resource::ensure_legacy_import(&state, uuid, true)
         .await
         .map_err(crate::service::resource::legacy_error)?;

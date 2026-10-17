@@ -174,8 +174,10 @@ fn durable_state_presence_events_resume_and_expiry() {
         storage.ysm_resume(&cursor, 7, NOW + 32),
         Err(ErrorCode::SnapshotRequired)
     ));
-    let manifest = std::fs::read_to_string(directory.path().join("manifest.json")).unwrap();
-    assert!(!manifest.contains("secret-auth-token"));
+    let metadata = std::fs::read(directory.path().join("metadata.sqlite3")).unwrap();
+    assert!(!metadata
+        .windows(b"secret-auth-token".len())
+        .any(|bytes| bytes == b"secret-auth-token"));
     drop(storage);
     let reopened = Storage::open(directory.path()).unwrap();
     assert_eq!(
@@ -263,7 +265,7 @@ fn authority_takeover_old_generation_and_equipment_revocation_are_durable() {
 }
 
 #[test]
-fn failed_manifest_commit_does_not_publish_state() {
+fn failed_sqlite_commit_does_not_publish_state() {
     let directory = tempfile::tempdir().unwrap();
     let storage = Storage::open(directory.path()).unwrap();
     let owner = Uuid::from_u128(1);
@@ -272,14 +274,20 @@ fn failed_manifest_commit_does_not_publish_state() {
     let key = publisher_key("instance", "scope", 1);
     storage.publish_ysm(owner, &key, &first, NOW).unwrap();
     let before = storage.ysm_snapshot(owner, NOW).unwrap();
-    std::fs::create_dir(directory.path().join("manifest.next")).unwrap();
+    let database = rusqlite::Connection::open(directory.path().join("metadata.sqlite3")).unwrap();
+    database
+        .execute_batch(
+            "CREATE TRIGGER reject_ysm BEFORE INSERT ON ysm_state BEGIN
+        SELECT RAISE(ABORT, 'injected SQLite commit failure'); END;",
+        )
+        .unwrap();
     assert!(matches!(
         storage.publish_ysm(owner, &key, &delta_body(&first, 1), NOW + 1),
         Err(ErrorCode::Internal)
     ));
     assert_eq!(storage.ysm_snapshot(owner, NOW + 1).unwrap(), before);
-    std::fs::remove_dir(directory.path().join("manifest.next")).unwrap();
-    std::fs::write(directory.path().join("manifest.next"), b"interrupted-write").unwrap();
+    database.execute_batch("DROP TRIGGER reject_ysm").unwrap();
+    drop(database);
     drop(storage);
     let reopened = Storage::open(directory.path()).unwrap();
     assert_eq!(reopened.ysm_snapshot(owner, NOW + 2).unwrap(), before);

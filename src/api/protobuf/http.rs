@@ -100,6 +100,7 @@ pub async fn dispatch(
         Body::ProfileRequest(request) => {
             let owner = Uuid::parse_str(&request.owner).map_err(|_| ErrorCode::InvalidMessage)?;
             resource::ensure_legacy_import(state, owner, false).await?;
+            state.user_manager.restore_model_owner(owner)?;
             let user = state
                 .user_manager
                 .get_by_uuid(&owner)

@@ -171,7 +171,10 @@ async fn app() -> Result<bool> {
     let protocol_sessions = Arc::new(service::session::ProtocolSessions::new(storage.instance_id()));
     let state = AppState {
         uptime: Instant::now(),
-        user_manager: Arc::new(UManager::new()),
+        user_manager: Arc::new(
+            UManager::open(storage.clone())
+                .map_err(|code| anyhow::anyhow!("Account storage startup failed: {code:?}"))?,
+        ),
         session: Arc::new(service::session::SessionRegistry::default()),
         subscribes: Arc::new(service::event::EventHub::default()),
         storage,

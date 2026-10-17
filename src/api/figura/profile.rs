@@ -50,8 +50,18 @@ pub async fn user_info(
         format!("{}/{}.moon", *AVATARS_VAR, formatted_uuid)
     };
 
-    let userinfo = if let Some(info) = state.user_manager.get_by_uuid(&uuid) { info.clone() } else {
-        return Err(ApiError::BadRequest) // NOTE: Not Found (404) shows badge
+    crate::service::resource::ensure_legacy_import(&state, uuid, false)
+        .await
+        .map_err(crate::service::resource::legacy_error)?;
+    state
+        .user_manager
+        .restore_model_owner(uuid)
+        .map_err(crate::service::resource::legacy_error)?;
+
+    let userinfo = if let Some(info) = state.user_manager.get_by_uuid(&uuid) {
+        info.clone()
+    } else {
+        return Err(ApiError::BadRequest); // NOTE: Not Found (404) shows badge
     };
 
     let mut user_info_response = json!({
@@ -97,10 +107,15 @@ pub async fn user_info(
             None
         }
     } else {
-        crate::service::resource::ensure_legacy_import(&state, uuid, false).await
+        let equipped = state
+            .storage
+            .equipped(uuid)
             .map_err(crate::service::resource::legacy_error)?;
-        let equipped = state.storage.equipped(uuid).map_err(crate::service::resource::legacy_error)?;
-        let selected = if supports_ysm(&headers) { equipped.primary } else { equipped.figura_compatibility };
+        let selected = if supports_ysm(&headers) {
+            equipped.primary
+        } else {
+            equipped.figura_compatibility
+        };
         selected.map(|avatar| avatar.legacy_figura_hash)
     };
     if let Some(hash) = hash {

@@ -129,7 +129,9 @@ async fn legacy_http_baseline() {
         .unwrap();
     let config: Config = toml::from_str(include_str!("../../Config.example.toml")).unwrap();
     let owner = Uuid::parse_str("00112233-4455-6677-8899-aabbccddeeff").unwrap();
-    let manager = UManager::new();
+    let storage =
+        Arc::new(crate::storage::Storage::open(directory.path().join("cloud-v1")).unwrap());
+    let manager = UManager::open(storage.clone()).unwrap();
     manager
         .insert(
             owner,
@@ -140,8 +142,6 @@ async fn legacy_http_baseline() {
             },
         )
         .unwrap();
-    let storage =
-        Arc::new(crate::storage::Storage::open(directory.path().join("cloud-v1")).unwrap());
     let protocol_sessions = Arc::new(crate::service::session::ProtocolSessions::new(
         storage.instance_id(),
     ));

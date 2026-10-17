@@ -119,10 +119,6 @@ pub fn inspect(path: &Path) -> Result<PackageIdentity> {
     )
 }
 
-pub fn inspect_bytes(bytes: &[u8]) -> Result<PackageIdentity> {
-    inspect_with_budget(bytes, MAX_DECOMPRESSED)
-}
-
 fn inspect_with_budget(source: impl Read, budget: u64) -> Result<PackageIdentity> {
     let mut scanner = Scanner {
         source: GzDecoder::new(source),

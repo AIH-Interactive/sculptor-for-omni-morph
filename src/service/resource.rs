@@ -509,17 +509,23 @@ pub async fn upload_legacy(state: &AppState, token: &str, body: axum::body::Body
         .map_err(legacy_error)
 }
 
-pub async fn write_legacy(owner: Uuid, temporary: bool, bytes: &[u8]) -> ApiResult<()> {
-    let inspection = bytes.to_vec();
-    tokio::task::spawn_blocking(move || super::package::inspect_bytes(&inspection))
-        .await
-        .map_err(|_| ApiError::Internal)?
-        .map_err(legacy_error)?;
+pub async fn write_legacy(
+    state: &AppState,
+    owner: Uuid,
+    temporary: bool,
+    bytes: &[u8],
+) -> ApiResult<()> {
     let target = legacy_path(owner, temporary);
-    let staging = StagedFile(target.with_extension(format!("{}.part", new_operation_id())));
+    let operation = operation_id(&new_operation_id()).map_err(legacy_error)?;
+    let staging = StagedFile(state.storage.upload_path(owner, operation));
     fs::write(&staging.0, bytes)
         .await
         .map_err(internal_and_log)?;
+    let inspection = staging.0.clone();
+    tokio::task::spawn_blocking(move || super::package::inspect(&inspection))
+        .await
+        .map_err(|_| ApiError::Internal)?
+        .map_err(legacy_error)?;
     fs::File::open(&staging.0)
         .await
         .map_err(internal_and_log)?

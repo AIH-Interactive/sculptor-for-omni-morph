@@ -4,12 +4,12 @@ use serde::{Deserialize, Serialize};
 use std::{
     collections::BTreeMap,
     fs,
-    io::Write,
     path::{Path, PathBuf},
     sync::Mutex,
 };
 use uuid::Uuid;
 
+mod sqlite;
 #[cfg(test)]
 mod tests;
 
@@ -54,12 +54,13 @@ struct Manifest {
     ysm: BTreeMap<Uuid, crate::service::ysm::Record>,
 }
 
-/// Immutable package blobs plus an atomically replaced, versioned metadata commit.
+/// Immutable package blobs plus transactional SQLite metadata.
 /// The old .moon tree is never the destination of a new-protocol file upload.
 pub struct Storage {
     root: PathBuf,
     committed: Mutex<Manifest>,
     blob_publication: Mutex<()>,
+    database: Mutex<rusqlite::Connection>,
 }
 
 impl std::fmt::Debug for Storage {
@@ -86,22 +87,7 @@ impl Storage {
         let root = root.as_ref().to_path_buf();
         fs::create_dir_all(root.join("blobs")).map_err(|_| ErrorCode::Internal)?;
         fs::create_dir_all(root.join("uploads")).map_err(|_| ErrorCode::Internal)?;
-        let path = root.join("manifest.json");
-        let manifest = if path.exists() {
-            serde_json::from_slice::<Manifest>(&fs::read(path).map_err(|_| ErrorCode::Internal)?)
-                .map_err(|_| ErrorCode::Internal)?
-        } else {
-            Manifest {
-                schema_version: 1,
-                instance_id: faster_hex::hex_string(&crate::utils::rand()[..16]),
-                owners: BTreeMap::new(),
-                operations: BTreeMap::new(),
-                ysm: BTreeMap::new(),
-            }
-        };
-        if manifest.schema_version != 1 {
-            return Err(ErrorCode::UnsupportedVersion);
-        }
+        let (database, manifest) = sqlite::open(&root)?;
         // Upload grants live in memory. After restart no previous .part can be committed.
         // Never clean an unknown schema; keep immutable blobs from interrupted commits.
         for entry in fs::read_dir(root.join("uploads")).map_err(|_| ErrorCode::Internal)? {
@@ -123,6 +109,7 @@ impl Storage {
             root,
             committed: Mutex::new(manifest),
             blob_publication: Mutex::new(()),
+            database: Mutex::new(database),
         };
         storage.transaction(|_| Ok(()))?;
         Ok(storage)
@@ -164,17 +151,71 @@ impl Storage {
         candidate
             .operations
             .retain(|_, operation| operation.expires > now_seconds());
-        let bytes = serde_json::to_vec(&candidate).map_err(|_| ErrorCode::Internal)?;
-        let path = self.root.join("manifest.next");
-        let mut file = fs::File::create(&path).map_err(|_| ErrorCode::Internal)?;
-        file.write_all(&bytes).map_err(|_| ErrorCode::Internal)?;
-        file.sync_all().map_err(|_| ErrorCode::Internal)?;
-        drop(file);
-        #[cfg(test)]
-        tests::pause_before_replace(&self.root);
-        fs::rename(path, self.root.join("manifest.json")).map_err(|_| ErrorCode::Internal)?;
+        let mut database = self.database.lock().map_err(|_| ErrorCode::Internal)?;
+        sqlite::save(&mut database, &candidate, &self.root)?;
         *committed = candidate;
         Ok(result)
+    }
+
+    pub fn users(&self) -> Result<Vec<crate::auth::Userinfo>> {
+        let database = self.database.lock().map_err(|_| ErrorCode::Internal)?;
+        let mut statement = database
+            .prepare("SELECT profile FROM users")
+            .map_err(sqlite::sql_error)?;
+        let rows = statement
+            .query_map([], |row| row.get::<_, String>(0))
+            .map_err(sqlite::sql_error)?;
+        rows.map(|row| {
+            serde_json::from_str(&row.map_err(sqlite::sql_error)?).map_err(|_| ErrorCode::Internal)
+        })
+        .collect()
+    }
+
+    pub fn has_owner(&self, uuid: Uuid) -> bool {
+        self.committed
+            .lock()
+            .is_ok_and(|manifest| manifest.owners.contains_key(&uuid))
+    }
+
+    pub fn save_user(&self, user: &crate::auth::Userinfo) -> Result<()> {
+        let mut persistent = user.clone();
+        persistent.token = None;
+        let profile = serde_json::to_string(&persistent).map_err(|_| ErrorCode::Internal)?;
+        let database = self.database.lock().map_err(|_| ErrorCode::Internal)?;
+        database.execute(
+            "INSERT INTO users(uuid, profile) VALUES (?1, ?2) ON CONFLICT(uuid) DO UPDATE SET profile = excluded.profile",
+            rusqlite::params![user.uuid.to_string(), profile],
+        ).map_err(sqlite::sql_error)?;
+        Ok(())
+    }
+
+    pub fn upload_permissions(&self) -> Result<Vec<(Uuid, bool)>> {
+        let database = self.database.lock().map_err(|_| ErrorCode::Internal)?;
+        let mut statement = database
+            .prepare("SELECT uuid, allowed FROM upload_permissions")
+            .map_err(sqlite::sql_error)?;
+        let rows = statement
+            .query_map([], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, bool>(1)?))
+            })
+            .map_err(sqlite::sql_error)?;
+        rows.map(|row| {
+            let (uuid, allowed) = row.map_err(sqlite::sql_error)?;
+            Ok((
+                Uuid::parse_str(&uuid).map_err(|_| ErrorCode::Internal)?,
+                allowed,
+            ))
+        })
+        .collect()
+    }
+
+    pub fn save_upload_permission(&self, uuid: Uuid, allowed: bool) -> Result<()> {
+        let database = self.database.lock().map_err(|_| ErrorCode::Internal)?;
+        database.execute(
+            "INSERT INTO upload_permissions VALUES (?1, ?2) ON CONFLICT(uuid) DO UPDATE SET allowed = excluded.allowed",
+            rusqlite::params![uuid.to_string(), allowed],
+        ).map_err(sqlite::sql_error)?;
+        Ok(())
     }
 
     pub fn avatar(&self, owner: Uuid, id: &str, revision: u64) -> Result<AvatarDescriptor> {

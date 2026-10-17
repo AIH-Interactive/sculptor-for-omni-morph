@@ -141,7 +141,9 @@ impl Restart {
             storage.instance_id(),
         ));
         assert_ne!(sessions.server_epoch, self.cursor.server_epoch);
-        let users = UManager::new();
+        let users = UManager::open(storage.clone()).unwrap();
+        assert!(users.get_by_uuid(&self.owner).is_some(),
+            "an observer must resolve the equipped owner's UUID after restart without owner re-login");
         // Synthetic identity verification for this new server, independent of
         // its revoked scoped token. No real account or external auth is used.
         users

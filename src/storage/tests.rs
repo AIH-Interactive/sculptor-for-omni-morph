@@ -9,12 +9,143 @@ const CHILD_ENV: &str = "OMNIMORPH_STORAGE_CHILD";
 const PAUSE_ENV: &str = "OMNIMORPH_PAUSE_COMMIT";
 const OWNER: u128 = 8801;
 
-// Test-only crash point: the candidate is synced, but the atomic commit has not happened.
+#[test]
+fn registered_profiles_survive_restart_with_model_associations() {
+    let directory = tempfile::tempdir().unwrap();
+    let root = directory.path().join("cloud-v1");
+    let owner = Uuid::from_u128(8802);
+    let storage = Arc::new(Storage::open(&root).unwrap());
+    let manager = UManager::open(storage.clone()).unwrap();
+    manager
+        .insert(
+            owner,
+            "session-must-not-persist".into(),
+            crate::auth::Userinfo {
+                uuid: owner,
+                nickname: "persistent owner".into(),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    manager.put_upload_state(owner, false).unwrap();
+    manager
+        .ban(&crate::auth::Userinfo {
+            uuid: owner,
+            ..Default::default()
+        })
+        .unwrap();
+    let avatar = publish(&storage, owner, "ysm");
+    drop(manager);
+    drop(storage);
+
+    let storage = Arc::new(Storage::open(&root).unwrap());
+    let manager = UManager::open(storage.clone()).unwrap();
+    let restored = manager
+        .get_by_uuid(&owner)
+        .expect("refresh by player UUID must still find its profile after server restart");
+    assert_eq!(restored.nickname, "persistent owner");
+    assert!(
+        restored.token.is_none(),
+        "authentication tokens must not survive restart"
+    );
+    assert!(restored.banned);
+    assert!(!manager.upload_state(owner, true));
+    assert!(manager.get(&"session-must-not-persist".into()).is_none());
+    assert_eq!(storage.avatar(owner, "ysm", 0).unwrap(), avatar);
+}
+
+#[test]
+fn failed_account_commit_does_not_authenticate_or_replace_profile() {
+    let directory = tempfile::tempdir().unwrap();
+    let storage = Arc::new(Storage::open(directory.path()).unwrap());
+    let manager = UManager::open(storage.clone()).unwrap();
+    let owner = Uuid::from_u128(8803);
+    let original = crate::auth::Userinfo {
+        uuid: owner,
+        nickname: "original".into(),
+        ..Default::default()
+    };
+    manager.insert_user(owner, original.clone()).unwrap();
+    storage.database.lock().unwrap().execute_batch(
+        "CREATE TRIGGER reject_account BEFORE INSERT ON users BEGIN SELECT RAISE(ABORT, 'injected account failure'); END;"
+    ).unwrap();
+    let mut updated = original;
+    updated.nickname = "uncommitted".into();
+    assert!(manager
+        .insert(owner, "uncommitted-token".into(), updated)
+        .is_err());
+    assert!(manager.get(&"uncommitted-token".into()).is_none());
+    assert_eq!(manager.get_by_uuid(&owner).unwrap().nickname, "original");
+    storage
+        .database
+        .lock()
+        .unwrap()
+        .execute_batch("DROP TRIGGER reject_account")
+        .unwrap();
+}
+
+#[test]
+fn sqlite_imports_manifest_once_and_preserves_uuid_model_links() {
+    let directory = tempfile::tempdir().unwrap();
+    let old = directory.path().join("old");
+    let new = directory.path().join("migrated");
+    let owner = Uuid::from_u128(8810);
+    let storage = Storage::open(&old).unwrap();
+    let avatar = publish(&storage, owner, "future_engine_asset");
+    let exported = serde_json::to_vec(&*storage.committed.lock().unwrap()).unwrap();
+    fs::create_dir_all(&new).unwrap();
+    fs::write(new.join("manifest.json"), &exported).unwrap();
+    let migrated = Arc::new(Storage::open(&new).unwrap());
+    assert_eq!(
+        migrated.avatar(owner, "future_engine_asset", 0).unwrap(),
+        avatar
+    );
+    assert_eq!(fs::read(new.join("manifest.json")).unwrap(), exported);
+    let manager = UManager::open(migrated.clone()).unwrap();
+    assert!(
+        manager.get_by_uuid(&owner).is_some(),
+        "old model owners acquire durable profiles"
+    );
+    let database = migrated.database.lock().unwrap();
+    let count: i64 = database
+        .query_row(
+            "SELECT count(*) FROM avatars WHERE owner_uuid = ?1 AND asset_id = ?2",
+            rusqlite::params![owner.to_string(), "future_engine_asset"],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(count, 1, "UUID/model association is queryable in SQLite");
+    assert!(database
+        .prepare("PRAGMA foreign_key_check")
+        .unwrap()
+        .query([])
+        .unwrap()
+        .next()
+        .unwrap()
+        .is_none());
+    drop(database);
+    drop(manager);
+    drop(migrated);
+    fs::write(
+        new.join("manifest.json"),
+        b"obsolete source is no longer authoritative",
+    )
+    .unwrap();
+    assert_eq!(
+        Storage::open(&new)
+            .unwrap()
+            .avatar(owner, "future_engine_asset", 0)
+            .unwrap(),
+        avatar
+    );
+}
+
+// Test-only crash point inside the real SQLite transaction, immediately before COMMIT.
 pub(super) fn pause_before_replace(root: &Path) {
     if std::env::var_os(PAUSE_ENV).is_none() {
         return;
     }
-    fs::write(root.join("commit-ready"), b"synced-before-replace").unwrap();
+    fs::write(root.join("commit-ready"), b"before-sqlite-commit").unwrap();
     std::thread::sleep(Duration::from_secs(30));
     panic!("Parent did not terminate the paused commit process");
 }
@@ -278,27 +409,31 @@ fn additive_migration_survives_process_termination() {
     let directory = tempfile::tempdir().unwrap();
     let root = directory.path();
     completed(root, "import");
-    let committed = fs::read(root.join("cloud-v1/manifest.json")).unwrap();
     let mut interrupted = child(root, "interrupt");
     let deadline = std::time::Instant::now() + Duration::from_secs(15);
     while !root.join("cloud-v1/commit-ready").exists() {
         if interrupted.try_wait().unwrap().is_some() || std::time::Instant::now() >= deadline {
             let _ = interrupted.kill();
             let _ = interrupted.wait();
-            panic!("Child did not reach the real synced pre-replace crash point");
+            panic!("Child did not reach the real SQLite pre-commit crash point");
         }
         std::thread::sleep(Duration::from_millis(20));
     }
     interrupted.kill().unwrap();
     assert!(!interrupted.wait().unwrap().success());
+    let database = rusqlite::Connection::open(root.join("cloud-v1/metadata.sqlite3")).unwrap();
+    let interrupted: i64 = database
+        .query_row(
+            "SELECT count(*) FROM avatars WHERE asset_id = 'interrupted'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
     assert_eq!(
-        fs::read(root.join("cloud-v1/manifest.json")).unwrap(),
-        committed
+        interrupted, 0,
+        "terminated SQLite transaction must be invisible"
     );
-    assert_ne!(
-        fs::read(root.join("cloud-v1/manifest.next")).unwrap(),
-        committed
-    );
+    drop(database);
     completed(root, "recover");
     completed(root, "recover");
     let runtime = tokio::runtime::Runtime::new().unwrap();
@@ -315,11 +450,8 @@ fn additive_migration_survives_process_termination() {
     } else {
         println!("SKIPPED production main route toggle: set OMNIMORPH_DELIVERY_BINARY");
     }
-    let manifest_path = root.join("cloud-v1/manifest.json");
-    let valid = fs::read(&manifest_path).unwrap();
-    let mut unknown: serde_json::Value = serde_json::from_slice(&valid).unwrap();
-    unknown["schema_version"] = 2.into();
-    fs::write(&manifest_path, serde_json::to_vec(&unknown).unwrap()).unwrap();
+    let database = rusqlite::Connection::open(root.join("cloud-v1/metadata.sqlite3")).unwrap();
+    database.pragma_update(None, "user_version", 2).unwrap();
     let future_upload = root.join("cloud-v1/uploads/future-schema.part");
     fs::write(&future_upload, b"preserve-unknown-data").unwrap();
     assert_eq!(
@@ -328,10 +460,13 @@ fn additive_migration_survives_process_termination() {
     );
     assert_eq!(fs::read(&future_upload).unwrap(), b"preserve-unknown-data");
     assert_eq!(
-        fs::read(&manifest_path).unwrap(),
-        serde_json::to_vec(&unknown).unwrap()
+        database
+            .pragma_query_value(None, "user_version", |row| row.get::<_, u32>(0))
+            .unwrap(),
+        2
     );
-    fs::write(&manifest_path, valid).unwrap();
+    database.pragma_update(None, "user_version", 1).unwrap();
+    drop(database);
     completed(root, "recover");
-    println!("B8 actual process termination: additive idempotent legacy import, synced commit interruption, restart, tombstones, equipment and version rejection PASS");
+    println!("SQLite process termination: additive idempotent legacy import, transaction rollback, restart, tombstones, equipment and version rejection PASS");
 }

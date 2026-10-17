@@ -94,7 +94,12 @@ async fn fetch_json(
             let can_upload = json.get("can_upload")
                 .map(|s| s.as_bool().unwrap_or(def_can_upload))
                 .unwrap_or(def_can_upload);
-            state.user_manager.put_upload_state(uuid, can_upload);
+            state
+                .user_manager
+                .put_upload_state(uuid, can_upload)
+                .map_err(|code| {
+                    anyhow::anyhow!("Account upload permission commit failed: {code:?}")
+                })?;
             Ok((uuid, auth_provider.clone()))
         }
         _ => Err(FetchError::WrongResponse(res.status().as_u16())),
@@ -171,6 +176,8 @@ async fn fetch_and_send(
 // User manager
 #[derive(Debug, Clone)]
 pub struct UManager {
+    storage: Option<Arc<crate::storage::Storage>>,
+    writes: Arc<std::sync::Mutex<()>>,
     /// Users with incomplete authentication
     pending: Arc<DashMap<String, String>>, // <SHA1 serverId, USERNAME> TODO: Add automatic purge
     /// Authenticated users TODO: Change name to sessions
@@ -184,8 +191,22 @@ pub struct UManager {
 }
 
 impl UManager {
+    pub fn open(storage: Arc<crate::storage::Storage>) -> crate::storage::Result<Self> {
+        let mut manager = Self::new();
+        for user in storage.users()? {
+            manager.registered.insert(user.uuid, user);
+        }
+        for (uuid, allowed) in storage.upload_permissions()? {
+            manager.can_upload.insert(uuid, allowed);
+        }
+        manager.storage = Some(storage);
+        Ok(manager)
+    }
+
     pub fn new() -> Self {
         Self {
+            storage: None,
+            writes: Arc::new(std::sync::Mutex::new(())),
             pending: Arc::new(DashMap::new()),
             registered: Arc::new(DashMap::new()),
             authenticated: Arc::new(DashMap::new()),
@@ -207,26 +228,59 @@ impl UManager {
     }
     pub fn insert(&self, uuid: Uuid, token: String, userinfo: Userinfo) -> Result<(), ()> {
         // Multiple authenticated device tokens may refer to one account.
+        self.insert_user(uuid, userinfo).map_err(|_| ())?;
         self.authenticated.insert(token, uuid);
-        self.insert_user(uuid, userinfo);
         Ok(())
     }
-    pub fn insert_user(&self, uuid: Uuid, userinfo: Userinfo) {
-        // self.registered.insert(uuid, userinfo)
-        let usercopy = userinfo.clone();
-        self.registered.entry(uuid)
-            .and_modify(|exist| {
-                if !userinfo.nickname.is_empty() { exist.nickname = userinfo.nickname };
-                if !userinfo.auth_provider.is_empty() { exist.auth_provider = userinfo.auth_provider };
-                if userinfo.rank != Userinfo::default().rank { exist.rank = userinfo.rank };
-                if userinfo.token.is_some() { exist.token = userinfo.token };
-                if userinfo.version != Userinfo::default().version { exist.version = userinfo.version };
-            }).or_insert(usercopy);
+    pub fn insert_user(&self, uuid: Uuid, userinfo: Userinfo) -> crate::storage::Result<()> {
+        if userinfo.uuid != uuid {
+            return Err(crate::protocol::v1::ErrorCode::InvalidMessage);
+        }
+        self.update_user(uuid, |existing| {
+            if let Some(existing) = existing {
+                let defaults = Userinfo::default();
+                if !userinfo.nickname.is_empty() {
+                    existing.nickname = userinfo.nickname;
+                }
+                if !userinfo.auth_provider.is_empty() {
+                    existing.auth_provider = userinfo.auth_provider;
+                }
+                if userinfo.rank != defaults.rank {
+                    existing.rank = userinfo.rank;
+                }
+                if userinfo.token.is_some() {
+                    existing.token = userinfo.token;
+                }
+                if userinfo.version != defaults.version {
+                    existing.version = userinfo.version;
+                }
+                existing.last_used = userinfo.last_used;
+            } else {
+                *existing = Some(userinfo);
+            }
+        })
     }
-    pub fn get(
+
+    fn update_user(
         &self,
-        token: &String,
-    ) -> Option<dashmap::mapref::one::Ref<'_, Uuid, Userinfo>> {
+        uuid: Uuid,
+        update: impl FnOnce(&mut Option<Userinfo>),
+    ) -> crate::storage::Result<()> {
+        let _write = self
+            .writes
+            .lock()
+            .map_err(|_| crate::protocol::v1::ErrorCode::Internal)?;
+        let mut candidate = self.registered.get(&uuid).map(|user| user.clone());
+        update(&mut candidate);
+        if let Some(user) = candidate {
+            if let Some(storage) = &self.storage {
+                storage.save_user(&user)?;
+            }
+            self.registered.insert(uuid, user);
+        }
+        Ok(())
+    }
+    pub fn get(&self, token: &String) -> Option<dashmap::mapref::one::Ref<'_, Uuid, Userinfo>> {
         let uuid = self.authenticated.get(token)?;
         self.registered.get(uuid.value())
     }
@@ -236,16 +290,35 @@ impl UManager {
     ) -> Option<dashmap::mapref::one::Ref<'_, Uuid, Userinfo>> {
         self.registered.get(uuid)
     }
-    pub fn ban(&self, banned_user: &Userinfo) {
-        self.registered.entry(banned_user.uuid)
-            .and_modify(|exist| {
-                exist.banned = true;
-            }).or_insert(banned_user.clone());
+
+    pub fn restore_model_owner(&self, uuid: Uuid) -> crate::storage::Result<()> {
+        if !self.registered.contains_key(&uuid)
+            && self
+                .storage
+                .as_ref()
+                .is_some_and(|storage| storage.has_owner(uuid))
+        {
+            self.insert_user(
+                uuid,
+                Userinfo {
+                    uuid,
+                    ..Default::default()
+                },
+            )?;
+        }
+        Ok(())
     }
-    pub fn unban(&self, uuid: &Uuid) {
-        if let Some(mut user) = self.registered.get_mut(uuid) {
-            user.banned = false;
-        };
+    pub fn ban(&self, banned_user: &Userinfo) -> crate::storage::Result<()> {
+        self.update_user(banned_user.uuid, |user| {
+            user.get_or_insert_with(|| banned_user.clone()).banned = true;
+        })
+    }
+    pub fn unban(&self, uuid: &Uuid) -> crate::storage::Result<()> {
+        self.update_user(*uuid, |user| {
+            if let Some(user) = user {
+                user.banned = false;
+            }
+        })
     }
     pub fn _is_authenticated(&self, token: &String) -> bool {
         self.authenticated.contains_key(token)
@@ -259,8 +332,16 @@ impl UManager {
     pub fn count_authenticated(&self) -> usize {
         self.authenticated.len()
     }
-    pub fn put_upload_state(&self, uuid: Uuid, upload_state: bool) {
+    pub fn put_upload_state(&self, uuid: Uuid, upload_state: bool) -> crate::storage::Result<()> {
+        let _write = self
+            .writes
+            .lock()
+            .map_err(|_| crate::protocol::v1::ErrorCode::Internal)?;
+        if let Some(storage) = &self.storage {
+            storage.save_upload_permission(uuid, upload_state)?;
+        }
         self.can_upload.insert(uuid, upload_state);
+        Ok(())
     }
     pub fn upload_state(&self, uuid: Uuid, def: bool) -> bool {
         self.can_upload.get(&uuid)
@@ -274,11 +355,6 @@ impl UManager {
         self.requested_temp.get(&uuid)
             .map(|temp_state| { *temp_state.value() })
             .unwrap_or(def)
-    }
-
-    pub fn remove(&self, uuid: &Uuid) {
-        let token = self.registered.get(uuid).unwrap().token.clone().unwrap();
-        self.authenticated.remove(&token);
     }
 }
 // End of User manager

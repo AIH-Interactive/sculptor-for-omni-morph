@@ -15,8 +15,11 @@ pub(super) async fn create_user(
     state.config.read().await.clone().verify_token(&token)?;
 
     debug!("Creating new user: {json:?}");
-    
-    state.user_manager.insert_user(json.uuid, json);
+
+    state
+        .user_manager
+        .insert_user(json.uuid, json)
+        .map_err(crate::service::resource::legacy_error)?;
     Ok("ok")
 }
 
@@ -28,9 +31,18 @@ pub(super) async fn ban(
     state.config.read().await.clone().verify_token(&token)?;
 
     info!("Trying ban user: {uuid}");
-    
-    if let Some(tx) = state.session.get(&uuid) {let _ = tx.send(crate::api::figura::SessionMessage::Banned).await;}
-    state.user_manager.ban(&Userinfo { uuid, banned: true, ..Default::default() });
+
+    if let Some(tx) = state.session.get(&uuid) {
+        let _ = tx.send(crate::api::figura::SessionMessage::Banned).await;
+    }
+    state
+        .user_manager
+        .ban(&Userinfo {
+            uuid,
+            banned: true,
+            ..Default::default()
+        })
+        .map_err(crate::service::resource::legacy_error)?;
     Ok("ok")
 }
 
@@ -42,8 +54,11 @@ pub(super) async fn unban(
     state.config.read().await.clone().verify_token(&token)?;
 
     info!("Trying unban user: {uuid}");
-    
-    state.user_manager.unban(&uuid);
+
+    state
+        .user_manager
+        .unban(&uuid)
+        .map_err(crate::service::resource::legacy_error)?;
     Ok("ok")
 }
 
@@ -62,5 +77,6 @@ pub(super) async fn list_sessions(
 ) -> ApiResult<String> {
     state.config.read().await.clone().verify_token(&token)?;
 
-    serde_json::to_string_pretty(&state.user_manager.get_all_authenticated()).map_err(|err| { internal_and_log(err) })
+    serde_json::to_string_pretty(&state.user_manager.get_all_authenticated())
+        .map_err(|err| internal_and_log(err))
 }
