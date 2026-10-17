@@ -3,11 +3,9 @@ use axum::extract::FromRequestParts;
 use axum::http::request::Parts;
 use axum::http::StatusCode;
 use tracing::{debug, trace};
-use tokio::fs;
 use uuid::Uuid;
 
-use crate::{api::errors::internal_and_log, ApiError, ApiResult, AppState, AVATARS_VAR};
-use crate::api::figura::profile::send_event;
+use crate::{ApiError, ApiResult, AppState};
 use super::super::figura::websocket::S2CMessage;
 use super::super::figura::websocket::SessionMessage;
 
@@ -48,6 +46,9 @@ pub async fn upload_avatar(
             user_info.nickname
         );
         crate::service::resource::write_legacy(user_info.uuid, false, &request_data).await?;
+        crate::service::resource::ensure_legacy_import(&state, user_info.uuid, true)
+            .await
+            .map_err(crate::service::resource::legacy_error)?;
     }
     Ok("ok".to_string())
 }
@@ -64,9 +65,7 @@ pub async fn delete_avatar(
             user_info.uuid,
             user_info.nickname
         );
-        let avatar_file = format!("{}/{}.moon", *AVATARS_VAR, user_info.uuid);
-        fs::remove_file(avatar_file).await.map_err(internal_and_log)?;
-        send_event(&state, &user_info.uuid).await;
+        crate::service::resource::delete_legacy_owner(&state, user_info.uuid).await?;
     }
     Ok("ok".to_string())
 }

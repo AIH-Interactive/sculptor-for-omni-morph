@@ -140,11 +140,19 @@ async fn legacy_http_baseline() {
             },
         )
         .unwrap();
+    let storage =
+        Arc::new(crate::storage::Storage::open(directory.path().join("cloud-v1")).unwrap());
+    let protocol_sessions = Arc::new(crate::service::session::ProtocolSessions::new(
+        storage.instance_id(),
+    ));
     let state = AppState {
         uptime: Instant::now(),
         user_manager: Arc::new(manager),
         session: Arc::new(crate::service::session::SessionRegistry::default()),
         subscribes: Arc::new(crate::service::event::EventHub::default()),
+        storage,
+        protocol_sessions,
+        transfers: Arc::new(crate::service::resource::Transfers::default()),
         config: Arc::new(RwLock::new(config)),
         figura_versions: Arc::new(RwLock::new(None)),
     };
@@ -152,6 +160,7 @@ async fn legacy_http_baseline() {
         .nest("/api", crate::legacy_api(1024))
         .route("/api/", get(crate::check_auth))
         .route("/ws", get(crate::api::figura::ws))
+        .merge(crate::api::protobuf::router())
         .with_state(state.clone());
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
@@ -272,6 +281,7 @@ async fn legacy_http_baseline() {
         "Historical assets route must still dispatch"
     );
     crate::service::tests::legacy_lifecycle(&base, &client, &state, &resource, owner).await;
+    crate::api::protobuf::tests::integration(&base, &client, &state, &resource).await;
     stop.send(()).unwrap();
     server.await.unwrap();
 }

@@ -40,7 +40,8 @@ pub async fn user_info(
         let last_modified = meta.modified().unwrap();
         SystemTime::now() > last_modified.add(Duration::from_secs(60))
     } else { false };
-    let avatar_file = if !request_temp_state && request_self_avatar && !outdated {
+    let use_temp = !request_temp_state && request_self_avatar && !outdated;
+    let avatar_file = if use_temp {
         tracing::info!("Profile {} is self requesting and it is temp", uuid);
         state.user_manager.put_request_temp_state(uuid, true);
         temp_avatar_file
@@ -48,7 +49,7 @@ pub async fn user_info(
         format!("{}/{}.moon", *AVATARS_VAR, formatted_uuid)
     };
 
-    let userinfo = if let Some(info) = state.user_manager.get_by_uuid(&uuid) { info } else {
+    let userinfo = if let Some(info) = state.user_manager.get_by_uuid(&uuid) { info.clone() } else {
         return Err(ApiError::BadRequest) // NOTE: Not Found (404) shows badge
     };
 
@@ -80,20 +81,22 @@ pub async fn user_info(
         )
     }
 
-    if fs::metadata(&avatar_file).await.is_ok() {
-        if let Some(equipped) = user_info_response
-            .get_mut("equipped")
-            .and_then(Value::as_array_mut)
-        {
-            match calculate_file_sha256(&avatar_file) {
-                Ok(hash) => equipped.push(json!({
-                    "id": "avatar",
-                    "owner": &formatted_uuid,
-                    "hash": hash
-                })),
-                Err(_e) => {}
-            }
+    let hash = if use_temp {
+        if fs::metadata(&avatar_file).await.is_ok() {
+            calculate_file_sha256(&avatar_file).ok()
+        } else {
+            None
         }
+    } else {
+        crate::service::resource::ensure_legacy_import(&state, uuid, false).await
+            .map_err(crate::service::resource::legacy_error)?;
+        state.storage.equipped(uuid).map_err(crate::service::resource::legacy_error)?
+            .figura_compatibility.map(|avatar| avatar.legacy_figura_hash)
+    };
+    if let Some(hash) = hash {
+        user_info_response["equipped"].as_array_mut().unwrap().push(json!({
+            "id": "avatar", "owner": &formatted_uuid, "hash": hash
+        }));
     }
     Ok(Json(user_info_response))
 }
@@ -107,7 +110,7 @@ pub async fn download_avatar(
     let str_uuid = format_uuid(&uuid);
     tracing::info!("Requesting an avatar: {}", str_uuid);
 
-    crate::service::resource::download_legacy(uuid, is_requesting_self(uuid, &state, &token)).await
+    crate::service::resource::download_legacy(&state, uuid, is_requesting_self(uuid, &state, &token)).await
 }
 
 pub async fn upload_avatar(

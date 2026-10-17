@@ -27,7 +27,10 @@ async fn handle_socket(mut ws: WebSocket, state: AppState) {
                 
                 // Channel for receiving messages from internal functions.
                 let (own_tx, own_rx) = mpsc::channel(32);
-                session_id = state.session.register(user.uuid, own_tx.clone());
+                session_id = match state.session.register_bounded(user.uuid, own_tx.clone()) {
+                    Ok(id) => id,
+                    Err(_) => { let _ = ws.close().await; return; }
+                };
 
                 // Channel for sending messages to subscribers
                 let subs_tx = state.subscribes.publisher(user.uuid);
@@ -36,7 +39,8 @@ async fn handle_socket(mut ws: WebSocket, state: AppState) {
             };
 
             // Starting main worker
-            match main_worker(&mut session, &mut ws, &state).await {
+            let (_, shutdown) = state.session.close_signal(session_id).expect("registered connection");
+            match main_worker(&mut session, &mut ws, &state, shutdown).await {
                 Ok(_) => (),
                 Err(kind) => tracing::error!("[WebSocket] Main worker halted due to {}.",  kind),
             }
@@ -57,10 +61,13 @@ async fn handle_socket(mut ws: WebSocket, state: AppState) {
     if let Err(kind) = ws.close().await { tracing::trace!("[WebSocket] Closing fault: {}", kind) }
 }
 
-async fn main_worker(session: &mut WSSession, ws: &mut WebSocket, state: &AppState) -> anyhow::Result<()> {
+async fn main_worker(session: &mut WSSession, ws: &mut WebSocket, state: &AppState,
+                     mut shutdown: tokio::sync::watch::Receiver<bool>) -> anyhow::Result<()> {
     tracing::debug!("WebSocket control for {} is transferred to the main worker", session.user.nickname);
     loop {
+        if *shutdown.borrow() { bail!("slow consumer requires reconnect"); }
         tokio::select! {
+            _ = shutdown.changed() => bail!("slow consumer requires reconnect"),
             external_msg = ws.recv_and_decode() => {
 
                 // Getting a value or halt the worker without an error
@@ -79,6 +86,10 @@ async fn main_worker(session: &mut WSSession, ws: &mut WebSocket, state: &AppSta
                 match external_msg {
                     C2SMessage::Token(_) => bail!("authentication passed, but the client sent the Token again"),
                     C2SMessage::Ping(func_id, echo, data) => {
+                        if data.len() > 1024 || state.protocol_sessions.charge(session.user.uuid, data.len() + 6).is_err() {
+                            ws.send(Message::Binary(S2CMessage::Notice(1).into())).await?;
+                            continue;
+                        }
                         let event = CloudEvent::FiguraPing {
                             owner: session.user.uuid,
                             function_id: func_id,
@@ -100,6 +111,10 @@ async fn main_worker(session: &mut WSSession, ws: &mut WebSocket, state: &AppSta
                         if session.user.uuid != uuid
                             && !session.sub_workers_aborthandles.contains_key(&uuid)
                         {
+                            if session.sub_workers_aborthandles.len() >= 128 {
+                                ws.send(Message::Binary(S2CMessage::Notice(1).into())).await?;
+                                continue;
+                            }
                             // Creates a channel to send pings to a subscriber if it can't find an existing one
                             let rx = state.subscribes.subscribe(uuid);
                             let handle = tokio::spawn(sub_worker(session.own_tx.clone(), rx)).abort_handle();
@@ -167,7 +182,7 @@ fn encode_event(event: CloudEvent) -> Vec<u8> {
         } => {
             S2CMessage::Ping(owner, function_id, echo, arguments).into()
         }
-        CloudEvent::AvatarChanged { owner } => S2CMessage::Event(owner).into(),
+        CloudEvent::AvatarChanged { owner, .. } => S2CMessage::Event(owner).into(),
         CloudEvent::LegacyRaw(bytes) => bytes,
     }
 }

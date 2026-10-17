@@ -4,7 +4,7 @@ use tokio::{sync::RwLock, time::Instant};
 
 use crate::{
     auth::UManager,
-    service::{event::EventHub, session::SessionRegistry},
+    service::{event::EventHub, session::{SessionRegistry, ProtocolSessions}},
     FiguraVersions,
 };
 
@@ -18,6 +18,9 @@ pub struct AppState {
     pub session: Arc<SessionRegistry>,
     /// Send messages for subscribers
     pub subscribes: Arc<EventHub>,
+    pub protocol_sessions: Arc<ProtocolSessions>,
+    pub storage: Arc<crate::storage::Storage>,
+    pub transfers: Arc<crate::service::resource::Transfers>,
     /// Current configuration
     pub config: Arc<RwLock<super::Config>>,
     /// Caching Figura Versions

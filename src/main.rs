@@ -19,6 +19,7 @@ pub use api::errors::{ApiResult, ApiError};
 mod api;
 mod protocol;
 mod service;
+mod storage;
 use api::{
     figura::{ws, info as api_info, profile as api_profile, auth as api_auth, assets as api_assets},
     lambda::{internal as lambda_internal, },
@@ -165,11 +166,17 @@ async fn app() -> Result<bool> {
     }
 
     // State
+    let storage = Arc::new(storage::Storage::open(PathBuf::from(&*AVATARS_VAR).join("cloud-v1"))
+        .map_err(|code| anyhow::anyhow!("Protocol storage startup failed: {code:?}"))?);
+    let protocol_sessions = Arc::new(service::session::ProtocolSessions::new(storage.instance_id()));
     let state = AppState {
         uptime: Instant::now(),
         user_manager: Arc::new(UManager::new()),
         session: Arc::new(service::session::SessionRegistry::default()),
         subscribes: Arc::new(service::event::EventHub::default()),
+        storage,
+        protocol_sessions,
+        transfers: Arc::new(service::resource::Transfers::default()),
         figura_versions: Arc::new(RwLock::new(None)),
         config,
     };
@@ -203,6 +210,7 @@ async fn app() -> Result<bool> {
         .nest("/api", api)
         .route("/api/", get(check_auth))
         .route("/ws", get(ws))
+        .merge(api::protobuf::router())
         .nest("/internal", internal)
         .with_state(state)
         .layer(TraceLayer::new_for_http().on_request(()))

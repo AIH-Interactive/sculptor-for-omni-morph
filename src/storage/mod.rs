@@ -1,0 +1,542 @@
+use crate::protocol::v1::{Ack, AvatarDescriptor, Delete, Equip, EquippedState, ErrorCode};
+use prost::Message;
+use serde::{Deserialize, Serialize};
+use std::{
+    collections::BTreeMap,
+    fs,
+    io::Write,
+    path::{Path, PathBuf},
+    sync::Mutex,
+};
+use uuid::Uuid;
+
+pub type Result<T> = std::result::Result<T, ErrorCode>;
+
+#[derive(Clone, Default, Deserialize, Serialize)]
+struct StoredAvatar {
+    descriptor: Vec<u8>,
+    tombstone: bool,
+}
+
+#[derive(Clone, Default, Deserialize, Serialize, PartialEq)]
+struct AssetRef {
+    id: String,
+    revision: u64,
+}
+
+#[derive(Clone, Default, Deserialize, Serialize)]
+struct Owner {
+    revision: u64,
+    primary: Option<AssetRef>,
+    compatibility: Option<AssetRef>,
+    legacy_sha256: Option<Vec<u8>>,
+    assets: BTreeMap<String, BTreeMap<u64, StoredAvatar>>,
+}
+
+#[derive(Clone, Deserialize, Serialize)]
+struct Operation {
+    kind: String,
+    fingerprint: Vec<u8>,
+    result: Vec<u8>,
+    expires: u64,
+}
+
+#[derive(Clone, Deserialize, Serialize)]
+struct Manifest {
+    schema_version: u32,
+    instance_id: String,
+    owners: BTreeMap<Uuid, Owner>,
+    operations: BTreeMap<String, Operation>,
+}
+
+/// Immutable package blobs plus an atomically replaced, versioned metadata commit.
+/// The old .moon tree is never the destination of a new-protocol file upload.
+pub struct Storage {
+    root: PathBuf,
+    committed: Mutex<Manifest>,
+    blob_publication: Mutex<()>,
+}
+
+impl std::fmt::Debug for Storage {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.debug_struct("Storage").finish_non_exhaustive()
+    }
+}
+
+pub fn now_seconds() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs()
+}
+
+pub fn sha256(bytes: &[u8]) -> Vec<u8> {
+    ring::digest::digest(&ring::digest::SHA256, bytes)
+        .as_ref()
+        .to_vec()
+}
+
+impl Storage {
+    pub fn open(root: impl AsRef<Path>) -> Result<Self> {
+        let root = root.as_ref().to_path_buf();
+        fs::create_dir_all(root.join("blobs")).map_err(|_| ErrorCode::Internal)?;
+        fs::create_dir_all(root.join("uploads")).map_err(|_| ErrorCode::Internal)?;
+        let path = root.join("manifest.json");
+        let manifest = if path.exists() {
+            serde_json::from_slice::<Manifest>(&fs::read(path).map_err(|_| ErrorCode::Internal)?)
+                .map_err(|_| ErrorCode::Internal)?
+        } else {
+            Manifest {
+                schema_version: 1,
+                instance_id: faster_hex::hex_string(&crate::utils::rand()[..16]),
+                owners: BTreeMap::new(),
+                operations: BTreeMap::new(),
+            }
+        };
+        if manifest.schema_version != 1 {
+            return Err(ErrorCode::UnsupportedVersion);
+        }
+        let storage = Self {
+            root,
+            committed: Mutex::new(manifest),
+            blob_publication: Mutex::new(()),
+        };
+        storage.transaction(|_| Ok(()))?;
+        Ok(storage)
+    }
+
+    pub fn instance_id(&self) -> String {
+        self.committed
+            .lock()
+            .expect("storage mutex poisoned")
+            .instance_id
+            .clone()
+    }
+
+    pub fn upload_path(&self, owner: Uuid, operation: Uuid) -> PathBuf {
+        self.root
+            .join("uploads")
+            .join(format!("{owner}-{operation}.part"))
+    }
+
+    pub fn blob_path(&self, hash: &[u8]) -> Result<PathBuf> {
+        if hash.len() != 32 {
+            return Err(ErrorCode::InvalidMessage);
+        }
+        Ok(self.root.join("blobs").join(faster_hex::hex_string(hash)))
+    }
+
+    fn transaction<T>(&self, change: impl FnOnce(&mut Manifest) -> Result<T>) -> Result<T> {
+        let mut committed = self.committed.lock().map_err(|_| ErrorCode::Internal)?;
+        let mut candidate = committed.clone();
+        let result = change(&mut candidate)?;
+        candidate
+            .operations
+            .retain(|_, operation| operation.expires > now_seconds());
+        let bytes = serde_json::to_vec(&candidate).map_err(|_| ErrorCode::Internal)?;
+        let path = self.root.join("manifest.next");
+        let mut file = fs::File::create(&path).map_err(|_| ErrorCode::Internal)?;
+        file.write_all(&bytes).map_err(|_| ErrorCode::Internal)?;
+        file.sync_all().map_err(|_| ErrorCode::Internal)?;
+        drop(file);
+        fs::rename(path, self.root.join("manifest.json")).map_err(|_| ErrorCode::Internal)?;
+        *committed = candidate;
+        Ok(result)
+    }
+
+    pub fn avatar(&self, owner: Uuid, id: &str, revision: u64) -> Result<AvatarDescriptor> {
+        let manifest = self.committed.lock().map_err(|_| ErrorCode::Internal)?;
+        let history = manifest
+            .owners
+            .get(&owner)
+            .and_then(|owner| owner.assets.get(id))
+            .ok_or(ErrorCode::NotFound)?;
+        let stored = if revision == 0 {
+            history.last_key_value().map(|(_, stored)| stored)
+        } else {
+            history.get(&revision)
+        }
+        .filter(|stored| !stored.tombstone)
+        .ok_or(ErrorCode::NotFound)?;
+        AvatarDescriptor::decode(stored.descriptor.as_slice()).map_err(|_| ErrorCode::Internal)
+    }
+
+    pub fn equipped(&self, owner: Uuid) -> Result<EquippedState> {
+        let manifest = self.committed.lock().map_err(|_| ErrorCode::Internal)?;
+        equipment(owner, manifest.owners.get(&owner))
+    }
+
+    pub fn legacy_hash_matches(&self, owner: Uuid, hash: &[u8]) -> bool {
+        self.committed
+            .lock()
+            .ok()
+            .and_then(|manifest| {
+                manifest
+                    .owners
+                    .get(&owner)
+                    .and_then(|owner| owner.legacy_sha256.clone())
+            })
+            .as_deref()
+            == Some(hash)
+    }
+
+    pub fn publish_blob(&self, bytes: &[u8], hash: &[u8]) -> Result<()> {
+        let _publication = self
+            .blob_publication
+            .lock()
+            .map_err(|_| ErrorCode::Internal)?;
+        if sha256(bytes) != hash {
+            return Err(ErrorCode::InvalidMessage);
+        }
+        let path = self.blob_path(hash)?;
+        if path.exists() {
+            let existing = fs::read(path).map_err(|_| ErrorCode::Internal)?;
+            return if sha256(&existing) == hash {
+                Ok(())
+            } else {
+                Err(ErrorCode::Internal)
+            };
+        }
+        let temporary = path.with_extension("next");
+        let mut file = fs::File::create(&temporary).map_err(|_| ErrorCode::Internal)?;
+        file.write_all(bytes).map_err(|_| ErrorCode::Internal)?;
+        file.sync_all().map_err(|_| ErrorCode::Internal)?;
+        drop(file);
+        fs::rename(temporary, path).map_err(|_| ErrorCode::Internal)
+    }
+
+    pub fn import_legacy(
+        &self,
+        mut avatar: AvatarDescriptor,
+        force_equipped: bool,
+    ) -> Result<AvatarDescriptor> {
+        let owner = Uuid::parse_str(&avatar.owner).map_err(|_| ErrorCode::InvalidMessage)?;
+        self.transaction(|manifest| {
+            let account = manifest.owners.entry(owner).or_default();
+            let unchanged = account.legacy_sha256.as_ref() == Some(&avatar.raw_sha256);
+            if unchanged {
+                if let Some(stored) = account
+                    .assets
+                    .get("avatar")
+                    .and_then(|history| history.last_key_value())
+                    .map(|(_, stored)| stored)
+                    .filter(|stored| !stored.tombstone)
+                {
+                    let current = AvatarDescriptor::decode(stored.descriptor.as_slice())
+                        .map_err(|_| ErrorCode::Internal)?;
+                    if force_equipped && current.raw_sha256 == avatar.raw_sha256 {
+                        select(
+                            account,
+                            Some(asset_ref(&current)),
+                            Some(asset_ref(&current)),
+                        );
+                    }
+                    if current.raw_sha256 == avatar.raw_sha256 {
+                        return Ok(current);
+                    }
+                }
+            }
+            account.legacy_sha256 = Some(avatar.raw_sha256.clone());
+            let history = account.assets.entry("avatar".into()).or_default();
+            avatar.revision = history
+                .last_key_value()
+                .map(|(revision, _)| revision + 1)
+                .unwrap_or(1);
+            history.insert(
+                avatar.revision,
+                StoredAvatar {
+                    descriptor: avatar.encode_to_vec(),
+                    tombstone: false,
+                },
+            );
+            select(account, Some(asset_ref(&avatar)), Some(asset_ref(&avatar)));
+            Ok(avatar.clone())
+        })
+    }
+
+    pub fn commit_avatar(
+        &self,
+        owner: Uuid,
+        operation: &str,
+        fingerprint: &[u8],
+        mut avatar: AvatarDescriptor,
+        max_assets: usize,
+    ) -> Result<AvatarDescriptor> {
+        self.transaction(|manifest| {
+            if let Some(result) =
+                replay::<AvatarDescriptor>(manifest, owner, operation, fingerprint)?
+            {
+                return Ok(result);
+            }
+            let account = manifest.owners.entry(owner).or_default();
+            if !account.assets.contains_key(&avatar.asset_id) && account.assets.len() >= max_assets
+            {
+                return Err(ErrorCode::LimitExceeded);
+            }
+            let history = account.assets.entry(avatar.asset_id.clone()).or_default();
+            if history.len() >= 1024 {
+                return Err(ErrorCode::LimitExceeded);
+            }
+            avatar.owner = owner.to_string();
+            avatar.revision = history
+                .last_key_value()
+                .map(|(revision, _)| revision + 1)
+                .unwrap_or(1);
+            history.insert(
+                avatar.revision,
+                StoredAvatar {
+                    descriptor: avatar.encode_to_vec(),
+                    tombstone: false,
+                },
+            );
+            remember(manifest, owner, operation, fingerprint, &avatar)?;
+            Ok(avatar.clone())
+        })
+    }
+
+    pub fn replay_avatar(
+        &self,
+        owner: Uuid,
+        operation: &str,
+        fingerprint: &[u8],
+    ) -> Result<Option<AvatarDescriptor>> {
+        let manifest = self.committed.lock().map_err(|_| ErrorCode::Internal)?;
+        replay(&manifest, owner, operation, fingerprint)
+    }
+
+    pub fn completed_upload(
+        &self,
+        owner: Uuid,
+        request: &crate::protocol::v1::CommitUpload,
+    ) -> Result<Option<AvatarDescriptor>> {
+        let manifest = self.committed.lock().map_err(|_| ErrorCode::Internal)?;
+        let Some(saved) = manifest
+            .operations
+            .get(&format!("{owner}/{}", request.operation_id))
+            .filter(|saved| saved.expires > now_seconds())
+        else {
+            return Ok(None);
+        };
+        if saved.kind != AvatarDescriptor::KIND {
+            return Err(ErrorCode::Conflict);
+        }
+        let avatar =
+            AvatarDescriptor::decode(saved.result.as_slice()).map_err(|_| ErrorCode::Internal)?;
+        if avatar.raw_sha256 != request.raw_sha256 || avatar.raw_length != request.raw_length {
+            return Err(ErrorCode::Conflict);
+        }
+        Ok(Some(avatar))
+    }
+
+    pub fn publish_staged(&self, path: &Path, hash: &[u8]) -> Result<()> {
+        let _publication = self
+            .blob_publication
+            .lock()
+            .map_err(|_| ErrorCode::Internal)?;
+        let target = self.blob_path(hash)?;
+        if target.exists() {
+            return Ok(());
+        }
+        fs::rename(path, target).map_err(|_| ErrorCode::Internal)
+    }
+
+    pub fn equip(&self, owner: Uuid, request: &Equip) -> Result<EquippedState> {
+        let fingerprint = sha256(&[b"equip".as_slice(), &request.encode_to_vec()].concat());
+        self.transaction(|manifest| {
+            if let Some(result) =
+                replay::<EquippedState>(manifest, owner, &request.operation_id, &fingerprint)?
+            {
+                return Ok(result);
+            }
+            let account = manifest.owners.entry(owner).or_default();
+            if account.revision != request.expected_revision {
+                return Err(ErrorCode::Conflict);
+            }
+            if request.clear {
+                select(account, None, None);
+            } else {
+                let avatar = account
+                    .assets
+                    .get(&request.asset_id)
+                    .and_then(|history| history.get(&request.asset_revision))
+                    .filter(|stored| !stored.tombstone)
+                    .ok_or(ErrorCode::NotFound)?;
+                let descriptor = AvatarDescriptor::decode(avatar.descriptor.as_slice())
+                    .map_err(|_| ErrorCode::Internal)?;
+                if descriptor.model_type != 1 {
+                    return Err(ErrorCode::UnsupportedCapability);
+                }
+                let reference = Some(asset_ref(&descriptor));
+                select(account, reference.clone(), reference);
+            }
+            let result = equipment(owner, Some(account))?;
+            remember(
+                manifest,
+                owner,
+                &request.operation_id,
+                &fingerprint,
+                &result,
+            )?;
+            Ok(result)
+        })
+    }
+
+    pub fn delete(&self, owner: Uuid, request: &Delete) -> Result<Ack> {
+        let fingerprint = sha256(&[b"delete".as_slice(), &request.encode_to_vec()].concat());
+        self.transaction(|manifest| {
+            if let Some(result) =
+                replay::<Ack>(manifest, owner, &request.operation_id, &fingerprint)?
+            {
+                return Ok(result);
+            }
+            let account = manifest.owners.get_mut(&owner).ok_or(ErrorCode::NotFound)?;
+            let history = account
+                .assets
+                .get_mut(&request.asset_id)
+                .ok_or(ErrorCode::NotFound)?;
+            let (revision, latest) = history.last_key_value().ok_or(ErrorCode::NotFound)?;
+            if *revision != request.expected_revision {
+                return Err(ErrorCode::Conflict);
+            }
+            if latest.tombstone {
+                return Err(ErrorCode::NotFound);
+            }
+            for stored in history.values_mut() {
+                stored.tombstone = true;
+            }
+            let primary = account
+                .primary
+                .clone()
+                .filter(|reference| reference.id != request.asset_id);
+            let compatibility = account
+                .compatibility
+                .clone()
+                .filter(|reference| reference.id != request.asset_id);
+            let previous_revision = account.revision;
+            select(account, primary, compatibility);
+            if account.revision == previous_revision {
+                account.revision += 1;
+            }
+            let result = Ack {
+                operation_id: request.operation_id.clone(),
+                revision: account.revision,
+                sequence: 0,
+            };
+            remember(
+                manifest,
+                owner,
+                &request.operation_id,
+                &fingerprint,
+                &result,
+            )?;
+            Ok(result)
+        })
+    }
+}
+
+fn asset_ref(avatar: &AvatarDescriptor) -> AssetRef {
+    AssetRef {
+        id: avatar.asset_id.clone(),
+        revision: avatar.revision,
+    }
+}
+
+fn select(account: &mut Owner, primary: Option<AssetRef>, compatibility: Option<AssetRef>) {
+    if account.primary != primary || account.compatibility != compatibility {
+        account.revision += 1;
+        account.primary = primary;
+        account.compatibility = compatibility;
+    }
+}
+
+fn equipment(owner: Uuid, account: Option<&Owner>) -> Result<EquippedState> {
+    let descriptor = |reference: &Option<AssetRef>| -> Result<Option<AvatarDescriptor>> {
+        let Some(reference) = reference else {
+            return Ok(None);
+        };
+        let stored = account
+            .and_then(|owner| owner.assets.get(&reference.id))
+            .and_then(|history| history.get(&reference.revision))
+            .filter(|stored| !stored.tombstone)
+            .ok_or(ErrorCode::Internal)?;
+        AvatarDescriptor::decode(stored.descriptor.as_slice())
+            .map(Some)
+            .map_err(|_| ErrorCode::Internal)
+    };
+    match account {
+        Some(account) => Ok(EquippedState {
+            owner: owner.to_string(),
+            revision: account.revision,
+            primary: descriptor(&account.primary)?,
+            figura_compatibility: descriptor(&account.compatibility)?,
+        }),
+        None => Ok(EquippedState {
+            owner: owner.to_string(),
+            ..Default::default()
+        }),
+    }
+}
+
+trait StoredResult: Message + Default {
+    const KIND: &'static str;
+}
+
+impl StoredResult for AvatarDescriptor {
+    const KIND: &'static str = "avatar";
+}
+impl StoredResult for EquippedState {
+    const KIND: &'static str = "equipped";
+}
+impl StoredResult for Ack {
+    const KIND: &'static str = "ack";
+}
+
+fn replay<T: StoredResult>(
+    manifest: &Manifest,
+    owner: Uuid,
+    operation: &str,
+    fingerprint: &[u8],
+) -> Result<Option<T>> {
+    let Some(saved) = manifest
+        .operations
+        .get(&format!("{owner}/{operation}"))
+        .filter(|operation| operation.expires > now_seconds())
+    else {
+        return Ok(None);
+    };
+    if saved.kind != T::KIND || saved.fingerprint != fingerprint {
+        return Err(ErrorCode::Conflict);
+    }
+    T::decode(saved.result.as_slice())
+        .map(Some)
+        .map_err(|_| ErrorCode::Internal)
+}
+
+fn remember<T: StoredResult>(
+    manifest: &mut Manifest,
+    owner: Uuid,
+    operation: &str,
+    fingerprint: &[u8],
+    result: &T,
+) -> Result<()> {
+    let prefix = format!("{owner}/");
+    if manifest
+        .operations
+        .iter()
+        .filter(|(key, value)| key.starts_with(&prefix) && value.expires > now_seconds())
+        .count()
+        >= 128
+    {
+        return Err(ErrorCode::LimitExceeded);
+    }
+    manifest.operations.insert(
+        format!("{owner}/{operation}"),
+        Operation {
+            kind: T::KIND.into(),
+            fingerprint: fingerprint.to_vec(),
+            result: result.encode_to_vec(),
+            expires: now_seconds() + 3600,
+        },
+    );
+    Ok(())
+}

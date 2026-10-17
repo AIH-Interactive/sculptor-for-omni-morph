@@ -13,6 +13,7 @@ pub enum CloudEvent {
     },
     AvatarChanged {
         owner: Uuid,
+        tombstone: bool,
     },
     /// Privileged legacy administration endpoint; never forwarded to Protobuf.
     LegacyRaw(Vec<u8>),

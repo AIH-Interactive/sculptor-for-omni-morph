@@ -1,9 +1,7 @@
 use axum::{body::Bytes, extract::{Path, State}};
-use tokio::fs;
-use tracing::warn;
 use uuid::Uuid;
 
-use crate::{api::figura::profile::send_event, auth::Token, ApiResult, AppState, AVATARS_VAR};
+use crate::{api::figura::profile::send_event, auth::Token, ApiResult, AppState};
 
 pub async fn upload_avatar(
     Path(uuid): Path<Uuid>,
@@ -21,6 +19,9 @@ pub async fn upload_avatar(
     );
 
     crate::service::resource::write_legacy(uuid, false, &request_data).await?;
+    crate::service::resource::ensure_legacy_import(&state, uuid, true)
+        .await
+        .map_err(crate::service::resource::legacy_error)?;
     send_event(&state, &uuid).await;
 
     Ok("ok")
@@ -38,15 +39,7 @@ pub async fn delete_avatar(
         uuid,
     );
 
-    let avatar_file = format!("{}/{}.moon", *AVATARS_VAR, &uuid);
-    match fs::remove_file(avatar_file).await {
-        Ok(_) => {},
-        Err(_) => {
-            warn!("avatar doesn't exist");
-            return Err(crate::ApiError::NotFound)
-        }
-    };
-    send_event(&state, &uuid).await;
+    crate::service::resource::delete_legacy_owner(&state, uuid).await?;
 
     Ok("ok")
 }

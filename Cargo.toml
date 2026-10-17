@@ -7,6 +7,9 @@ publish = false
 
 [dependencies]
 prost = "=0.14.3"
+prost-types = "=0.14.3"
+futures-util = { version = "=0.3.31", default-features = false, features = ["sink", "std"] }
+tokio-util = { version = "=0.7.12", features = ["io"] }
 # Logging
 tracing-subscriber = { version = "0.3", features = ["env-filter", "chrono"] }
 tracing-appender = "0.2"
@@ -48,7 +51,6 @@ tokio = { version = "1.41", features = ["full"] }
 cross = "0.2.5"
 tempfile = "=3.14.0"
 tokio-tungstenite = "=0.24.0"
-futures-util = { version = "=0.3.31", default-features = false, features = ["sink", "std"] }
 
 [build-dependencies]
 prost-build = "=0.14.3"
