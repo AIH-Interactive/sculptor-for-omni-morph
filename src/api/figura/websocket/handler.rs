@@ -4,6 +4,7 @@ use dashmap::DashMap;
 use tokio::sync::{broadcast, mpsc};
 
 use crate::{auth::Userinfo, AppState};
+use crate::service::event::CloudEvent;
 
 use super::{processor::*, AuthModeError, S2CMessage, C2SMessage, WSSession, SessionMessage, RADError};
 
@@ -20,23 +21,16 @@ async fn handle_socket(mut ws: WebSocket, state: AppState) {
         Ok(user) => {
 
             // Creating session & creating/getting channels
+            let session_id;
             let mut session = {
                 let sub_workers_aborthandles = DashMap::new();
                 
                 // Channel for receiving messages from internal functions.
                 let (own_tx, own_rx) = mpsc::channel(32);
-                state.session.insert(user.uuid, own_tx.clone());
+                session_id = state.session.register(user.uuid, own_tx.clone());
 
                 // Channel for sending messages to subscribers
-                let subs_tx = match state.subscribes.get(&user.uuid) {
-                    Some(tx) => tx.clone(),
-                    None => {
-                        tracing::debug!("[Subscribes] Can't find own subs channel for {}, creating new...", user.uuid);
-                        let (subs_tx, _) = broadcast::channel(32);
-                        state.subscribes.insert(user.uuid, subs_tx.clone());
-                        subs_tx
-                    },
-                };
+                let subs_tx = state.subscribes.publisher(user.uuid);
 
                 WSSession { user: user.clone(), own_tx, own_rx, subs_tx, sub_workers_aborthandles }
             };
@@ -52,8 +46,7 @@ async fn handle_socket(mut ws: WebSocket, state: AppState) {
             }
         
             // Removing session data
-            state.session.remove(&user.uuid);
-            state.user_manager.remove(&user.uuid);
+            state.session.remove(session_id);
         },
         Err(kind) => {
             tracing::info!("[WebSocket] Can't authenticate: {}", kind);
@@ -86,29 +79,29 @@ async fn main_worker(session: &mut WSSession, ws: &mut WebSocket, state: &AppSta
                 match external_msg {
                     C2SMessage::Token(_) => bail!("authentication passed, but the client sent the Token again"),
                     C2SMessage::Ping(func_id, echo, data) => {
-                        let s2c_ping: Vec<u8> = S2CMessage::Ping(session.user.uuid, func_id, echo, data).into();
+                        let event = CloudEvent::FiguraPing {
+                            owner: session.user.uuid,
+                            function_id: func_id,
+                            echo,
+                            arguments: data,
+                        };
                         
                         // Echo check
                         if echo {
-                            ws.send(Message::Binary(s2c_ping.clone())).await?
+                            ws.send(Message::Binary(encode_event(event.clone()))).await?
                         }
                         // Sending to others
-                        let _ = session.subs_tx.send(s2c_ping);
+                        let _ = session.subs_tx.send(event);
                     },
                     C2SMessage::Sub(uuid) => {
                         tracing::debug!("[WebSocket] {} subscribes to {}", session.user.nickname, uuid);
                         
                         // Doesn't allow to subscribe to yourself
-                        if session.user.uuid != uuid {
+                        if session.user.uuid != uuid
+                            && !session.sub_workers_aborthandles.contains_key(&uuid)
+                        {
                             // Creates a channel to send pings to a subscriber if it can't find an existing one
-                            let rx = match state.subscribes.get(&uuid) {
-                                Some(tx) => tx.subscribe(),
-                                None => {
-                                    let (tx, rx) = broadcast::channel(32);
-                                    state.subscribes.insert(uuid, tx);
-                                    rx
-                                },
-                            };
+                            let rx = state.subscribes.subscribe(uuid);
                             let handle = tokio::spawn(sub_worker(session.own_tx.clone(), rx)).abort_handle();
                             session.sub_workers_aborthandles.insert(uuid, handle);
                         }
@@ -116,8 +109,8 @@ async fn main_worker(session: &mut WSSession, ws: &mut WebSocket, state: &AppSta
                     C2SMessage::Unsub(uuid) => {
                         tracing::debug!("[WebSocket] {} unsubscribes from {}", session.user.nickname, uuid);
 
-                        match session.sub_workers_aborthandles.get(&uuid) {
-                            Some(handle) => handle.abort(),
+                        match session.sub_workers_aborthandles.remove(&uuid) {
+                            Some((_, handle)) => handle.abort(),
                             None => tracing::warn!("[WebSocket] {} was not subscribed.", session.user.nickname),
                         };
                     },
@@ -126,6 +119,9 @@ async fn main_worker(session: &mut WSSession, ws: &mut WebSocket, state: &AppSta
             internal_msg = session.own_rx.recv() => {
                 let internal_msg = internal_msg.ok_or(anyhow::anyhow!("Unexpected error! Session channel broken!"))?;
                 match internal_msg {
+                    SessionMessage::Event(event) => {
+                        ws.send(Message::Binary(encode_event(event))).await?
+                    },
                     SessionMessage::Ping(msg) => {
                         ws.send(Message::Binary(msg)).await?
                     },
@@ -142,7 +138,7 @@ async fn main_worker(session: &mut WSSession, ws: &mut WebSocket, state: &AppSta
     }
 }
 
-async fn sub_worker(tx_main: mpsc::Sender<SessionMessage>, mut rx: broadcast::Receiver<Vec<u8>>) {
+async fn sub_worker(tx_main: mpsc::Sender<SessionMessage>, mut rx: broadcast::Receiver<CloudEvent>) {
     loop {
         let msg = match rx.recv().await {
             Ok(m) => m,
@@ -151,7 +147,7 @@ async fn sub_worker(tx_main: mpsc::Sender<SessionMessage>, mut rx: broadcast::Re
                 return;
             },
         };
-        match tx_main.send(SessionMessage::Ping(msg)).await {
+        match tx_main.send(SessionMessage::Event(msg)).await {
             Ok(_) => (),
             Err(kind) => {
                 tracing::error!("[Subscribes_Worker] Session error! {}", kind);
@@ -161,13 +157,29 @@ async fn sub_worker(tx_main: mpsc::Sender<SessionMessage>, mut rx: broadcast::Re
     }
 }
 
+fn encode_event(event: CloudEvent) -> Vec<u8> {
+    match event {
+        CloudEvent::FiguraPing {
+            owner,
+            function_id,
+            echo,
+            arguments,
+        } => {
+            S2CMessage::Ping(owner, function_id, echo, arguments).into()
+        }
+        CloudEvent::AvatarChanged { owner } => S2CMessage::Event(owner).into(),
+        CloudEvent::LegacyRaw(bytes) => bytes,
+    }
+}
+
 async fn authenticate(socket: &mut WebSocket, state: &AppState) -> Result<Userinfo, AuthModeError> {
     match socket.recv_and_decode().await {
         Ok(msg) => {
             match msg {
                 C2SMessage::Token(token) => {
                     let token = String::from_utf8(token.to_vec()).map_err(|_| AuthModeError::ConvertError)?;
-                    match state.user_manager.get(&token) {
+                    let identity = state.user_manager.get(&token).map(|user| user.clone());
+                    match identity {
                         Some(user) => {
                             if socket.send(Message::Binary(S2CMessage::Auth.into())).await.is_err() {
                                 Err(AuthModeError::SendError)

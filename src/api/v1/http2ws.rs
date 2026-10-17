@@ -29,7 +29,7 @@ pub(super) async fn raw(
         Some(uuid) => {
             // for only one
             let tx = state.session.get(&uuid).ok_or_else(|| { warn!("unknown uuid"); crate::ApiError::NotFound })?;
-            tx.value().send(crate::api::figura::SessionMessage::Ping(payload)).await.map_err(internal_and_log)?;
+            tx.send(crate::api::figura::SessionMessage::Ping(payload)).await.map_err(internal_and_log)?;
             Ok("ok")
         },
         None => {
@@ -56,7 +56,7 @@ pub(super) async fn sub_raw(
         Some(uuid) => {
             // for only one
             let tx = state.subscribes.get(&uuid).ok_or_else(|| { warn!("unknown uuid"); crate::ApiError::NotFound })?;
-            tx.value().send(payload).map_err(internal_and_log)?;
+            tx.send(crate::service::event::CloudEvent::LegacyRaw(payload)).map_err(internal_and_log)?;
             Ok("ok")
         },
         None => {

@@ -3,10 +3,7 @@ use axum::extract::FromRequestParts;
 use axum::http::request::Parts;
 use axum::http::StatusCode;
 use tracing::{debug, trace};
-use tokio::{
-    fs,
-    io::{self, BufWriter},
-};
+use tokio::fs;
 use uuid::Uuid;
 
 use crate::{api::errors::internal_and_log, ApiError, ApiResult, AppState, AVATARS_VAR};
@@ -30,9 +27,7 @@ pub async fn temp_avatar(
             user_info.nickname
         );
         state.user_manager.put_request_temp_state(uuid, false);
-        let avatar_file = format!("{}/temp/{}.moon", *AVATARS_VAR, user_info.uuid);
-        let mut file = BufWriter::new(fs::File::create(&avatar_file).await.map_err(internal_and_log)?);
-        io::copy(&mut request_data.as_ref(), &mut file).await.map_err(internal_and_log)?;
+        crate::service::resource::write_legacy(user_info.uuid, true, &request_data).await?;
     }
     Ok("ok".to_string())
 }
@@ -52,9 +47,7 @@ pub async fn upload_avatar(
             user_info.uuid,
             user_info.nickname
         );
-        let avatar_file = format!("{}/{}.moon", *AVATARS_VAR, user_info.uuid);
-        let mut file = BufWriter::new(fs::File::create(&avatar_file).await.map_err(internal_and_log)?);
-        io::copy(&mut request_data.as_ref(), &mut file).await.map_err(internal_and_log)?;
+        crate::service::resource::write_legacy(user_info.uuid, false, &request_data).await?;
     }
     Ok("ok".to_string())
 }

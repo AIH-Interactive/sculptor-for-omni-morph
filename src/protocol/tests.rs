@@ -117,7 +117,6 @@ async fn legacy_http_baseline() {
         AppState,
     };
     use axum::{routing::get, Router};
-    use dashmap::DashMap;
     use std::sync::Arc;
     use tokio::{sync::RwLock, time::Instant};
 
@@ -144,15 +143,16 @@ async fn legacy_http_baseline() {
     let state = AppState {
         uptime: Instant::now(),
         user_manager: Arc::new(manager),
-        session: Arc::new(DashMap::new()),
-        subscribes: Arc::new(DashMap::new()),
+        session: Arc::new(crate::service::session::SessionRegistry::default()),
+        subscribes: Arc::new(crate::service::event::EventHub::default()),
         config: Arc::new(RwLock::new(config)),
         figura_versions: Arc::new(RwLock::new(None)),
     };
     let router = Router::new()
         .nest("/api", crate::legacy_api(1024))
         .route("/api/", get(crate::check_auth))
-        .with_state(state);
+        .route("/ws", get(crate::api::figura::ws))
+        .with_state(state.clone());
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
     let (stop, stopped) = tokio::sync::oneshot::channel::<()>();
@@ -271,6 +271,7 @@ async fn legacy_http_baseline() {
         404,
         "Historical assets route must still dispatch"
     );
+    crate::service::tests::legacy_lifecycle(&base, &client, &state, &resource, owner).await;
     stop.send(()).unwrap();
     server.await.unwrap();
 }

@@ -1,10 +1,12 @@
 use std::sync::Arc;
 
-use dashmap::DashMap;
-use tokio::{sync::*, time::Instant};
-use uuid::Uuid;
+use tokio::{sync::RwLock, time::Instant};
 
-use crate::{api::figura::SessionMessage, auth::UManager, FiguraVersions};
+use crate::{
+    auth::UManager,
+    service::{event::EventHub, session::SessionRegistry},
+    FiguraVersions,
+};
 
 #[derive(Debug, Clone)]
 pub struct AppState {
@@ -13,9 +15,9 @@ pub struct AppState {
     /// User manager
     pub user_manager: Arc<UManager>,
     /// Send into WebSocket
-    pub session: Arc<DashMap<Uuid, mpsc::Sender<SessionMessage>>>,
+    pub session: Arc<SessionRegistry>,
     /// Send messages for subscribers
-    pub subscribes: Arc<DashMap<Uuid, broadcast::Sender<Vec<u8>>>>,
+    pub subscribes: Arc<EventHub>,
     /// Current configuration
     pub config: Arc<RwLock<super::Config>>,
     /// Caching Figura Versions

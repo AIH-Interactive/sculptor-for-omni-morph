@@ -23,7 +23,7 @@ pub fn rand() -> [u8; 50] {
 pub async fn update_advanced_users(
     path: PathBuf,
     umanager: Arc<UManager>,
-    sessions: Arc<dashmap::DashMap<Uuid, tokio::sync::mpsc::Sender<crate::api::figura::SessionMessage>>>,
+    sessions: Arc<crate::service::session::SessionRegistry>,
     config: Arc<RwLock<Config>>,
 ) {
     let (tx, mut rx) = tokio::sync::mpsc::channel::<notify::Result<Event>>(1);
@@ -75,7 +75,7 @@ pub async fn update_advanced_users(
 pub async fn update_bans_from_minecraft(
     folder: PathBuf,
     umanager: Arc<UManager>,
-    sessions: Arc<dashmap::DashMap<Uuid, tokio::sync::mpsc::Sender<crate::api::figura::SessionMessage>>>
+    sessions: Arc<crate::service::session::SessionRegistry>
 ) {
     let path = folder.join("banned-players.json");
     let mut file = tokio::fs::File::open(path.clone()).await.expect("Access denied or banned-players.json doesn't exists!");

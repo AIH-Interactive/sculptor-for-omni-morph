@@ -6,7 +6,7 @@ use axum::{
 };
 use dashmap::DashMap;
 use thiserror::Error;
-use tracing::{debug, error, trace, warn};
+use tracing::{debug, error, trace};
 use uuid::Uuid;
 
 use crate::{ApiError, ApiResult, AppState, TIMEOUT, USER_AGENT};
@@ -18,15 +18,7 @@ pub struct Token(pub String);
 
 impl Token {
     pub async fn check_auth(self, state: &AppState) -> ApiResult<()> {
-        if let Some(user) = state.user_manager.get(&self.0) {
-            if !user.banned {
-                Ok(())
-            } else {
-                Err(ApiError::Unauthorized)
-            }
-        } else {
-            Err(ApiError::Unauthorized)
-        }
+        crate::service::session::authenticate(state, &self.0).map(|_| ())
     }
 }
 
@@ -215,18 +207,7 @@ impl UManager {
         self.pending.remove(server_id)
     }
     pub fn insert(&self, uuid: Uuid, token: String, userinfo: Userinfo) -> Result<(), ()> {
-        // Check for the presence of an active session.
-        if let Some(userinfo) = self.registered.get(&uuid) {
-            if let Some(token) = &userinfo.token {
-                if self.authenticated.contains_key(token) {
-                    warn!("Rejected attempt to create a second session for the same user!");
-                    return Err(())
-                }
-                debug!("`{}` already have token in registered profile (old token already removed from 'authenticated')", userinfo.nickname);
-            }
-        }
-
-        // Adding a user
+        // Multiple authenticated device tokens may refer to one account.
         self.authenticated.insert(token, uuid);
         self.insert_user(uuid, userinfo);
         Ok(())

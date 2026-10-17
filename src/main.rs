@@ -1,7 +1,6 @@
 #![allow(clippy::module_inception)]
 use anyhow::Result;
 use axum::{extract::DefaultBodyLimit, routing::{delete, get, post, put}, Router};
-use dashmap::DashMap;
 use tracing_panic::panic_hook;
 use tracing_subscriber::{fmt::{self, time::ChronoLocal}, layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
 use std::{path::PathBuf, sync::Arc, env::var, net::SocketAddr};
@@ -19,6 +18,7 @@ pub use api::errors::{ApiResult, ApiError};
 // API
 mod api;
 mod protocol;
+mod service;
 use api::{
     figura::{ws, info as api_info, profile as api_profile, auth as api_auth, assets as api_assets},
     lambda::{internal as lambda_internal, },
@@ -168,8 +168,8 @@ async fn app() -> Result<bool> {
     let state = AppState {
         uptime: Instant::now(),
         user_manager: Arc::new(UManager::new()),
-        session: Arc::new(DashMap::new()),
-        subscribes: Arc::new(DashMap::new()),
+        session: Arc::new(service::session::SessionRegistry::default()),
+        subscribes: Arc::new(service::event::EventHub::default()),
         figura_versions: Arc::new(RwLock::new(None)),
         config,
     };

@@ -1,5 +1,5 @@
 use axum::{body::Bytes, extract::{Path, State}};
-use tokio::{fs, io::{self, BufWriter}};
+use tokio::fs;
 use tracing::warn;
 use uuid::Uuid;
 
@@ -20,9 +20,7 @@ pub async fn upload_avatar(
         uuid,
     );
 
-    let avatar_file = format!("{}/{}.moon", *AVATARS_VAR, &uuid);
-    let mut file = BufWriter::new(fs::File::create(&avatar_file).await.unwrap());
-    io::copy(&mut request_data.as_ref(), &mut file).await.unwrap();
+    crate::service::resource::write_legacy(uuid, false, &request_data).await?;
     send_event(&state, &uuid).await;
 
     Ok("ok")
