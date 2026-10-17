@@ -185,7 +185,7 @@ impl ProtocolSessions {
 #[derive(Debug)]
 struct Connection {
     owner: Uuid,
-    sender: mpsc::Sender<SessionMessage>,
+    sender: super::queue::Sender,
     close: watch::Sender<bool>,
 }
 
@@ -198,14 +198,15 @@ pub struct SessionRegistry {
 }
 
 impl SessionRegistry {
-    fn register(&self, owner: Uuid, sender: mpsc::Sender<SessionMessage>) -> u64 {
+    fn register(&self, owner: Uuid, sender: super::queue::Sender) -> u64 {
         let id = self.next_id.fetch_add(1, Ordering::Relaxed) + 1;
+        let close = sender.close_signal();
         self.connections.insert(
             id,
             Connection {
                 owner,
                 sender,
-                close: watch::channel(false).0,
+                close,
             },
         );
         id
@@ -214,7 +215,7 @@ impl SessionRegistry {
     pub fn register_bounded(
         &self,
         owner: Uuid,
-        sender: mpsc::Sender<SessionMessage>,
+        sender: super::queue::Sender,
     ) -> Result<u64, ErrorCode> {
         let _admission = self.admission.lock().map_err(|_| ErrorCode::Internal)?;
         if self.count(owner) >= 8 {
@@ -255,10 +256,17 @@ impl SessionRegistry {
     }
 }
 
-pub struct Recipients(Vec<(mpsc::Sender<SessionMessage>, watch::Sender<bool>)>);
+pub struct Recipients(Vec<(super::queue::Sender, watch::Sender<bool>)>);
 
 impl Recipients {
     pub async fn send(
+        &self,
+        message: SessionMessage,
+    ) -> Result<(), mpsc::error::SendError<SessionMessage>> {
+        self.try_send(message)
+    }
+
+    pub fn try_send(
         &self,
         message: SessionMessage,
     ) -> Result<(), mpsc::error::SendError<SessionMessage>> {
@@ -310,11 +318,11 @@ mod tests {
         let mut receivers = Vec::new();
         let mut ids = Vec::new();
         for _ in 0..8 {
-            let (sender, receiver) = mpsc::channel(1);
+            let (sender, receiver) = crate::service::queue::channel(1);
             receivers.push(receiver);
             ids.push(registry.register_bounded(owner, sender).unwrap());
         }
-        let (sender, _receiver) = mpsc::channel(1);
+        let (sender, _receiver) = crate::service::queue::channel(1);
         assert_eq!(
             registry.register_bounded(owner, sender),
             Err(ErrorCode::LimitExceeded)
@@ -334,15 +342,15 @@ mod tests {
             .is_err());
         assert!(*closed.borrow());
         registry.remove(ids[0]);
-        let (sender, _receiver) = mpsc::channel(1);
+        let (sender, _receiver) = crate::service::queue::channel(1);
         registry.register_bounded(owner, sender).unwrap();
     }
 
     #[tokio::test]
     async fn disconnect_removes_only_its_connection() {
         let registry = SessionRegistry::default();
-        let (first, mut first_rx) = mpsc::channel(4);
-        let (second, mut second_rx) = mpsc::channel(4);
+        let (first, mut first_rx) = crate::service::queue::channel(4);
+        let (second, mut second_rx) = crate::service::queue::channel(4);
         let owner = Uuid::nil();
         let first_id = registry.register(owner, first);
         let second_id = registry.register(owner, second);

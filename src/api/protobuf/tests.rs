@@ -12,6 +12,9 @@ use tokio_tungstenite::{
     MaybeTlsStream, WebSocketStream,
 };
 use uuid::Uuid;
+mod legacy_bridge;
+mod recovery;
+pub(crate) mod restart;
 
 type Socket = WebSocketStream<MaybeTlsStream<TcpStream>>;
 
@@ -40,7 +43,8 @@ impl Client {
             vec![
                 Capability::Figura as i32,
                 Capability::YsmPlain as i32,
-                Capability::YsmEncrypted as i32
+                Capability::YsmEncrypted as i32,
+                Capability::YsmRecovery as i32
             ]
         );
         let request = Envelope {
@@ -106,6 +110,11 @@ impl Client {
     }
 
     async fn websocket(&mut self) -> Socket {
+        self.websocket_with_capabilities(vec![Capability::Figura as i32])
+            .await
+    }
+
+    async fn websocket_with_capabilities(&mut self, capabilities: Vec<i32>) -> Socket {
         let mut request = (self.base.replacen("http://", "ws://", 1) + "/ws/protobuf/v1")
             .into_client_request()
             .unwrap();
@@ -124,7 +133,7 @@ impl Client {
         let hello = self.message(envelope::Body::Hello(Hello {
             supported_majors: vec![1],
             client_version: "network-test".into(),
-            capabilities: vec![Capability::Figura as i32],
+            capabilities,
         }));
         socket
             .send(WsMessage::Binary(hello.encode_to_vec()))
@@ -553,6 +562,8 @@ pub async fn integration(base: &str, http: &reqwest::Client, state: &AppState, r
     ysm_resources(base, http, state, raw).await;
     failed_ysm_uploads(base, http, state).await;
     cancelled_legacy_upload(base, state).await;
+    recovery::integration(base, http, state).await;
+    legacy_bridge::integration(base, http, state).await;
 }
 
 async fn cancelled_legacy_upload(base: &str, state: &AppState) {

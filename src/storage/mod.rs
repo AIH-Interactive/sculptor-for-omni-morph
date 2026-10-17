@@ -47,6 +47,8 @@ struct Manifest {
     instance_id: String,
     owners: BTreeMap<Uuid, Owner>,
     operations: BTreeMap<String, Operation>,
+    #[serde(default)]
+    ysm: BTreeMap<Uuid, crate::service::ysm::Record>,
 }
 
 /// Immutable package blobs plus an atomically replaced, versioned metadata commit.
@@ -91,6 +93,7 @@ impl Storage {
                 instance_id: faster_hex::hex_string(&crate::utils::rand()[..16]),
                 owners: BTreeMap::new(),
                 operations: BTreeMap::new(),
+                ysm: BTreeMap::new(),
             }
         };
         if manifest.schema_version != 1 {
@@ -130,6 +133,14 @@ impl Storage {
         let mut committed = self.committed.lock().map_err(|_| ErrorCode::Internal)?;
         let mut candidate = committed.clone();
         let result = change(&mut candidate)?;
+        // Equipment and its durable recovery revocation belong to one commit.
+        for (owner, record) in &mut candidate.ysm {
+            if candidate.owners.get(owner).is_none_or(|account| {
+                account.revision != record.equipment_revision || account.primary.is_none()
+            }) {
+                record.active = false;
+            }
+        }
         candidate
             .operations
             .retain(|_, operation| operation.expires > now_seconds());
@@ -164,6 +175,83 @@ impl Storage {
     pub fn equipped(&self, owner: Uuid) -> Result<EquippedState> {
         let manifest = self.committed.lock().map_err(|_| ErrorCode::Internal)?;
         equipment(owner, manifest.owners.get(&owner))
+    }
+
+    pub fn publish_ysm(
+        &self,
+        owner: Uuid,
+        publisher_key: &[u8],
+        body: &crate::protocol::v1::envelope::Body,
+        now: u64,
+    ) -> Result<crate::service::ysm::Published> {
+        self.transaction(|manifest| {
+            let equipped = equipment(owner, manifest.owners.get(&owner))?;
+            let record = manifest.ysm.entry(owner).or_default();
+            crate::service::ysm::publish(record, owner, &equipped, publisher_key, body, now)
+        })
+    }
+
+    pub fn publish_legacy_ysm(
+        &self,
+        owner: Uuid,
+        publisher_key: &[u8],
+        bytes: &[u8],
+        now: u64,
+    ) -> Result<Vec<crate::protocol::v1::envelope::Body>> {
+        self.transaction(|manifest| {
+            let equipped = equipment(owner, manifest.owners.get(&owner))?;
+            let avatar = equipped.primary.as_ref().ok_or(ErrorCode::NotFound)?;
+            let frame = crate::service::ysm::legacy::decode(bytes, avatar.revision)?;
+            let record = manifest.ysm.entry(owner).or_default();
+            crate::service::ysm::publish_legacy(
+                record,
+                owner,
+                &equipped,
+                publisher_key,
+                &frame,
+                &sha256(bytes),
+                now,
+            )
+        })
+    }
+
+    pub fn ysm_snapshot(&self, owner: Uuid, now: u64) -> Result<crate::protocol::v1::YsmSnapshot> {
+        let manifest = self.committed.lock().map_err(|_| ErrorCode::Internal)?;
+        let equipped = equipment(owner, manifest.owners.get(&owner))?;
+        let record = manifest
+            .ysm
+            .get(&owner)
+            .ok_or(ErrorCode::SnapshotRequired)?;
+        crate::service::ysm::snapshot(record, &equipped, now)
+    }
+
+    pub fn ysm_resume(
+        &self,
+        cursor: &crate::protocol::v1::Resume,
+        server_epoch: u64,
+        now: u64,
+    ) -> Result<Vec<crate::protocol::v1::envelope::Body>> {
+        let owner = Uuid::parse_str(&cursor.owner).map_err(|_| ErrorCode::InvalidMessage)?;
+        let manifest = self.committed.lock().map_err(|_| ErrorCode::Internal)?;
+        let equipped = equipment(owner, manifest.owners.get(&owner))?;
+        let record = manifest
+            .ysm
+            .get(&owner)
+            .ok_or(ErrorCode::SnapshotRequired)?;
+        crate::service::ysm::resume(record, &equipped, cursor, server_epoch, now)
+    }
+
+    pub fn ysm_event_deadline(
+        &self,
+        owner: Uuid,
+        id: &crate::protocol::v1::YsmIdentity,
+    ) -> Result<u64> {
+        let manifest = self.committed.lock().map_err(|_| ErrorCode::Internal)?;
+        let record = manifest
+            .ysm
+            .get(&owner)
+            .ok_or(ErrorCode::SnapshotRequired)?;
+        crate::service::ysm::event_deadline(record, id)
     }
 
     pub fn legacy_hash_matches(&self, owner: Uuid, hash: &[u8]) -> bool {

@@ -5,11 +5,7 @@ use axum::extract::{
     OriginalUri, State,
 };
 use std::{collections::HashMap, time::Duration};
-use tokio::{
-    sync::{mpsc, watch},
-    task::AbortHandle,
-    time::Instant,
-};
+use tokio::{task::AbortHandle, time::Instant};
 use uuid::Uuid;
 
 pub async fn upgrade(
@@ -60,7 +56,7 @@ fn decode(scope: &ScopedSession, bytes: &[u8]) -> Result<Envelope, ErrorCode> {
 }
 
 async fn serve(mut socket: WebSocket, state: AppState, scope: ScopedSession) {
-    let (sender, mut receiver) = mpsc::channel(32);
+    let (sender, mut receiver) = crate::service::queue::channel(32);
     let mut subscriptions = HashMap::new();
     let mut registered = None;
     let mut attached = false;
@@ -80,18 +76,19 @@ async fn serve(mut socket: WebSocket, state: AppState, scope: ScopedSession) {
         if !hello.supported_majors.contains(&1) {
             return Err(ErrorCode::UnsupportedVersion);
         }
+        let supports_ysm = hello.capabilities.iter().any(|capability| matches!(Capability::try_from(*capability), Ok(Capability::YsmPlain | Capability::YsmEncrypted | Capability::YsmRecovery)));
         state.protocol_sessions.authorize(&state, &scope.id, scope.epoch)?;
         state.protocol_sessions.attach(&scope.id)?;
         attached = true;
         let id = state.session.register_bounded(scope.owner, sender.clone())?;
         registered = Some(id);
-        let (close, mut shutdown) = state.session.close_signal(id).ok_or(ErrorCode::Internal)?;
+        let (_close, mut shutdown) = state.session.close_signal(id).ok_or(ErrorCode::Internal)?;
         send(&mut socket, envelope(request.request_id, Some(&scope), envelope::Body::HelloAck(hello_ack(&state).await))).await?;
         let mut last_seen = Instant::now();
         let mut heartbeat = tokio::time::interval_at(Instant::now() + Duration::from_secs(20), Duration::from_secs(20));
         loop {
             if *shutdown.borrow() {
-                return Err(ErrorCode::LimitExceeded);
+                return Err(ErrorCode::SnapshotRequired);
             }
             tokio::select! {
                 incoming = socket.recv() => {
@@ -121,7 +118,7 @@ async fn serve(mut socket: WebSocket, state: AppState, scope: ScopedSession) {
                                 send(&mut socket, envelope(request.request_id, Some(&scope), error_body(code, request.request_id))).await?;
                                 continue;
                             }
-                            let body = handle(&state, &scope, request.body.unwrap(), &sender, &close, &mut subscriptions).await;
+                            let body = handle(&state, &scope, request.body.unwrap(), &sender, supports_ysm, &mut subscriptions).await;
                             match body {
                                 Ok(Some(body)) => send(&mut socket, envelope(request.request_id, Some(&scope), body)).await?,
                                 Ok(None) => {}
@@ -134,11 +131,13 @@ async fn serve(mut socket: WebSocket, state: AppState, scope: ScopedSession) {
                 outgoing = receiver.recv() => {
                     match outgoing.ok_or(ErrorCode::Offline)? {
                         SessionMessage::Event(event) => {
+                            if !supports_ysm && matches!(&event, CloudEvent::Ysm { .. }) { continue; }
                             if let Some(body) = event_body(&state, event)? {
                                 send(&mut socket, envelope(0, Some(&scope), body)).await?;
                             }
                         }
                         SessionMessage::Banned => return Err(ErrorCode::Forbidden),
+                        SessionMessage::ResyncRequired => return Err(ErrorCode::SnapshotRequired),
                         SessionMessage::Ping(_) => {} // Privileged legacy bytes never enter this adapter.
                     }
                 }
@@ -172,14 +171,14 @@ async fn handle(
     state: &AppState,
     scope: &ScopedSession,
     body: envelope::Body,
-    sender: &mpsc::Sender<SessionMessage>,
-    close: &watch::Sender<bool>,
+    sender: &crate::service::queue::Sender,
+    supports_ysm: bool,
     subscriptions: &mut HashMap<Uuid, AbortHandle>,
 ) -> Result<Option<envelope::Body>, ErrorCode> {
     use envelope::Body;
     match body {
         Body::Subscribe(request) => {
-            if !request.cursors.is_empty() {
+            if !supports_ysm && !request.cursors.is_empty() {
                 return Err(ErrorCode::UnsupportedCapability);
             }
             let owners: std::collections::HashSet<Uuid> = request
@@ -187,6 +186,14 @@ async fn handle(
                 .iter()
                 .map(|owner| Uuid::parse_str(owner).map_err(|_| ErrorCode::InvalidMessage))
                 .collect::<Result<_, _>>()?;
+            let mut cursors = HashMap::new();
+            for cursor in request.cursors {
+                let owner =
+                    Uuid::parse_str(&cursor.owner).map_err(|_| ErrorCode::InvalidMessage)?;
+                if !owners.contains(&owner) || cursors.insert(owner, cursor).is_some() {
+                    return Err(ErrorCode::InvalidMessage);
+                }
+            }
             if subscriptions
                 .keys()
                 .copied()
@@ -201,28 +208,39 @@ async fn handle(
                 if owner == scope.owner || subscriptions.contains_key(&owner) {
                     continue;
                 }
-                let mut events = state.subscribes.subscribe(owner);
-                let sender = sender.clone();
-                let close = close.clone();
-                let worker = tokio::spawn(async move {
-                    loop {
-                        match events.recv().await {
-                            Ok(event) => {
-                                if sender.try_send(SessionMessage::Event(event)).is_err() {
-                                    close.send_replace(true);
-                                    break;
-                                }
-                            }
-                            Err(_) => {
-                                close.send_replace(true);
-                                break;
-                            }
-                        }
-                    }
-                })
-                .abort_handle();
+                let worker = subscription::spawn(
+                    state.clone(),
+                    owner,
+                    cursors.remove(&owner),
+                    sender.clone(),
+                    supports_ysm,
+                );
                 subscriptions.insert(owner, worker);
             }
+            Ok(Some(Body::Ack(Ack::default())))
+        }
+        Body::Resume(cursor) => {
+            if !supports_ysm {
+                return Err(ErrorCode::UnsupportedCapability);
+            }
+            let owner = Uuid::parse_str(&cursor.owner).map_err(|_| ErrorCode::InvalidMessage)?;
+            if owner == scope.owner {
+                return Err(ErrorCode::InvalidMessage);
+            }
+            if !subscriptions.contains_key(&owner) && subscriptions.len() >= 128 {
+                return Err(ErrorCode::LimitExceeded);
+            }
+            if let Some(worker) = subscriptions.remove(&owner) {
+                worker.abort();
+            }
+            let worker = subscription::spawn(
+                state.clone(),
+                owner,
+                Some(cursor),
+                sender.clone(),
+                supports_ysm,
+            );
+            subscriptions.insert(owner, worker);
             Ok(Some(Body::Ack(Ack::default())))
         }
         Body::Unsubscribe(request) => {
@@ -264,5 +282,6 @@ fn event_body(state: &AppState, event: CloudEvent) -> Result<Option<envelope::Bo
             })))
         }
         CloudEvent::LegacyRaw(_) => Ok(None),
+        CloudEvent::Ysm { body, .. } => Ok(Some(body)),
     }
 }

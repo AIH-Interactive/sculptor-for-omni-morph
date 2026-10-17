@@ -224,6 +224,42 @@ pub async fn dispatch(
                 Ok(Body::Ack(Ack::default()))
             }
         }
+        body @ (Body::YsmSnapshot(_) | Body::YsmDelta(_) | Body::YsmEvent(_)) => {
+            let publisher = crate::service::ysm::publisher_key(
+                &state.protocol_sessions.instance_id,
+                &scope.id,
+                scope.epoch,
+            );
+            let now = crate::storage::now_seconds();
+            let published = state
+                .storage
+                .publish_ysm(scope.owner, &publisher, &body, now)?;
+            if published.changed {
+                let _ = state
+                    .subscribes
+                    .publisher(scope.owner)
+                    .send(CloudEvent::Ysm {
+                        owner: scope.owner,
+                        expires_at: matches!(&body, Body::YsmEvent(_))
+                            .then_some(now.saturating_add(30)),
+                        body,
+                    });
+            }
+            Ok(Body::Ack(published.ack))
+        }
+        Body::SnapshotRequest(request) => {
+            let owner = crate::service::ysm::player_owner(&request.owner)?;
+            match state
+                .storage
+                .ysm_snapshot(owner, crate::storage::now_seconds())
+            {
+                Ok(snapshot) => Ok(Body::YsmSnapshot(snapshot)),
+                Err(code) => {
+                    crate::service::event::request_snapshot(state, owner, code);
+                    Err(code)
+                }
+            }
+        }
         Body::Heartbeat(heartbeat) => Ok(Body::Heartbeat(heartbeat)),
         _ => Err(ErrorCode::InvalidMessage),
     }

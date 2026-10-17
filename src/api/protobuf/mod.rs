@@ -1,5 +1,6 @@
 mod http;
 mod resources;
+mod subscription;
 mod websocket;
 
 #[cfg(test)]
@@ -126,6 +127,7 @@ pub async fn hello_ack(state: &AppState) -> HelloAck {
             Capability::Figura as i32,
             Capability::YsmPlain as i32,
             Capability::YsmEncrypted as i32,
+            Capability::YsmRecovery as i32,
         ],
         limits: Some(limits(state).await),
         heartbeat_seconds: 20,
