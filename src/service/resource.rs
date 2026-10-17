@@ -27,6 +27,50 @@ impl Drop for PendingUpload {
 #[derive(Default)]
 pub struct Transfers {
     pending: Mutex<HashMap<(Uuid, Uuid), PendingUpload>>,
+    legacy_active: Mutex<HashMap<Uuid, usize>>,
+}
+
+struct LegacyUploadPermit {
+    transfers: std::sync::Arc<Transfers>,
+    owner: Uuid,
+}
+
+impl LegacyUploadPermit {
+    fn acquire(transfers: &std::sync::Arc<Transfers>, owner: Uuid) -> Result<Self, ErrorCode> {
+        // Keep admission in the same lock order as protobuf grant creation.
+        let mut pending = transfers.pending.lock().map_err(|_| ErrorCode::Internal)?;
+        pending.retain(|_, upload| upload.expires > crate::storage::now_seconds() || upload.busy);
+        let mut legacy = transfers
+            .legacy_active
+            .lock()
+            .map_err(|_| ErrorCode::Internal)?;
+        let active = legacy.entry(owner).or_default();
+        let grants = pending
+            .keys()
+            .filter(|(account, _)| *account == owner)
+            .count();
+        if grants + *active >= 2 {
+            return Err(ErrorCode::LimitExceeded);
+        }
+        *active += 1;
+        Ok(Self {
+            transfers: transfers.clone(),
+            owner,
+        })
+    }
+}
+
+impl Drop for LegacyUploadPermit {
+    fn drop(&mut self) {
+        if let Ok(mut active) = self.transfers.legacy_active.lock() {
+            if let Some(count) = active.get_mut(&self.owner) {
+                *count = count.saturating_sub(1);
+                if *count == 0 {
+                    active.remove(&self.owner);
+                }
+            }
+        }
+    }
 }
 
 impl std::fmt::Debug for Transfers {
@@ -55,9 +99,14 @@ pub async fn grant_upload(
         return Err(ErrorCode::Forbidden);
     }
     descriptor.owner = owner.to_string();
-    if descriptor.model_type != ModelType::ModelFigura as i32
-        || descriptor.distribution_format != DistributionFormat::FiguraCompressedNbt as i32
-    {
+    let expected_format = match ModelType::try_from(descriptor.model_type) {
+        Ok(ModelType::ModelFigura) => DistributionFormat::FiguraCompressedNbt,
+        Ok(ModelType::ModelYsmPlain | ModelType::ModelYsmEncrypted) => {
+            DistributionFormat::YsmDistributionPackage
+        }
+        _ => return Err(ErrorCode::UnsupportedCapability),
+    };
+    if descriptor.distribution_format != expected_format as i32 {
         return Err(ErrorCode::UnsupportedCapability);
     }
     if descriptor.asset_id.is_empty()
@@ -74,7 +123,9 @@ pub async fn grant_upload(
         || descriptor
             .required_capabilities
             .iter()
-            .any(|capability| *capability != 1)
+            .any(|capability| *capability != descriptor.model_type)
+        || (descriptor.model_type != 1
+            && (descriptor.content_sha256.len() != 32 || descriptor.schema_sha256.len() != 32))
     {
         return Err(ErrorCode::InvalidMessage);
     }
@@ -107,10 +158,16 @@ pub async fn grant_upload(
             return Err(ErrorCode::Conflict);
         }
     } else {
+        let legacy = state
+            .transfers
+            .legacy_active
+            .lock()
+            .map_err(|_| ErrorCode::Internal)?;
         if pending
             .keys()
             .filter(|(account, _)| *account == owner)
             .count()
+            + legacy.get(&owner).copied().unwrap_or_default()
             >= 2
         {
             return Err(ErrorCode::LimitExceeded);
@@ -237,6 +294,31 @@ pub async fn commit_upload(
     } else {
         state.storage.blob_path(&descriptor.raw_sha256)?
     };
+    let inspection_path = source.clone();
+    let inspected = tokio::task::spawn_blocking(move || super::package::inspect(&inspection_path))
+        .await
+        .map_err(|_| ErrorCode::Internal)?
+        .and_then(|identity| {
+            if identity.model_type as i32 != descriptor.model_type
+                || identity
+                    .content_hash
+                    .as_ref()
+                    .is_some_and(|hash| *hash != descriptor.content_sha256)
+            {
+                Err(ErrorCode::InvalidMessage)
+            } else {
+                Ok(())
+            }
+        });
+    if let Err(code) = inspected {
+        state
+            .transfers
+            .pending
+            .lock()
+            .map_err(|_| ErrorCode::Internal)?
+            .remove(&(owner, operation));
+        return Err(code);
+    }
     descriptor.legacy_figura_hash = legacy_file_hash(&source).await?;
     if descriptor.content_sha256.is_empty() {
         descriptor.content_sha256 = descriptor.raw_sha256.clone();
@@ -303,7 +385,6 @@ pub async fn ensure_legacy_import(
     owner: Uuid,
     force_equipped: bool,
 ) -> Result<(), ErrorCode> {
-    use base64::Engine;
     let path = legacy_path(owner, false);
     if !path.exists() {
         return Ok(());
@@ -315,28 +396,37 @@ pub async fn ensure_legacy_import(
     if metadata.len() > limit as u64 {
         return Err(ErrorCode::LimitExceeded);
     }
-    let bytes = fs::read(path).await.map_err(|_| ErrorCode::Internal)?;
-    let hash = crate::storage::sha256(&bytes);
+    // Work from a bounded snapshot so an atomic legacy replacement cannot change
+    // the bytes between classification, hashing and immutable publication.
+    let operation = operation_id(&new_operation_id())?;
+    let snapshot = StagedFile(state.storage.upload_path(owner, operation));
+    let raw_length = copy_bounded(&path, &snapshot.0, limit as u64).await?;
+    let hash = raw_file_hash(&snapshot.0).await?;
     if !force_equipped && state.storage.legacy_hash_matches(owner, &hash) {
         return Ok(());
     }
-    let legacy_hash = crate::storage::sha256(
-        base64::engine::general_purpose::STANDARD
-            .encode(&bytes)
-            .as_bytes(),
-    );
-    state.storage.publish_blob(&bytes, &hash)?;
+    let legacy_hash = legacy_file_hash(&snapshot.0).await?;
+    let inspection_path = snapshot.0.clone();
+    let identity = tokio::task::spawn_blocking(move || super::package::inspect(&inspection_path))
+        .await
+        .map_err(|_| ErrorCode::Internal)??;
+    let model_type = identity.model_type as i32;
+    state.storage.publish_staged(&snapshot.0, &hash)?;
     state.storage.import_legacy(
         AvatarDescriptor {
             owner: owner.to_string(),
             asset_id: "avatar".into(),
-            model_type: ModelType::ModelFigura as i32,
-            distribution_format: DistributionFormat::FiguraCompressedNbt as i32,
+            model_type,
+            distribution_format: if model_type == 1 {
+                DistributionFormat::FiguraCompressedNbt
+            } else {
+                DistributionFormat::YsmDistributionPackage
+            } as i32,
             raw_sha256: hash.clone(),
-            raw_length: bytes.len() as u64,
-            content_sha256: hash,
-            legacy_figura_hash: faster_hex::hex_string(&legacy_hash),
-            required_capabilities: vec![1],
+            raw_length,
+            content_sha256: identity.content_hash.unwrap_or(hash),
+            legacy_figura_hash: legacy_hash,
+            required_capabilities: vec![model_type],
             ..Default::default()
         },
         force_equipped,
@@ -350,50 +440,198 @@ pub fn legacy_path(owner: Uuid, temporary: bool) -> PathBuf {
     root.join(format!("{owner}.moon"))
 }
 
-pub async fn upload_legacy(state: &AppState, token: &str, bytes: &[u8]) -> ApiResult<()> {
+/// Cleans an unpublished staging file on failure, timeout or request cancellation.
+struct StagedFile(PathBuf);
+
+impl Drop for StagedFile {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.0);
+    }
+}
+
+pub async fn upload_legacy(state: &AppState, token: &str, body: axum::body::Body) -> ApiResult<()> {
+    use futures_util::StreamExt;
+    use tokio::io::AsyncWriteExt;
     let user = super::session::authenticate(state, token)?;
-    let allowed = state.config.read().await.limitations.can_upload;
+    let config = state.config.read().await;
+    let allowed = config.limitations.can_upload;
+    let limit = config.limitations.max_avatar_size.saturating_mul(1000);
+    drop(config);
     if !state.user_manager.upload_state(user.uuid, allowed) {
         return Err(ApiError::Forbidden);
     }
-    // write() completes the full buffer before success, including small packages.
-    write_legacy(user.uuid, false, bytes).await?;
+    let _permit = LegacyUploadPermit::acquire(&state.transfers, user.uuid).map_err(|code| {
+        if code == ErrorCode::LimitExceeded {
+            ApiError::TooManyRequests
+        } else {
+            legacy_error(code)
+        }
+    })?;
+    let operation = Uuid::parse_str(&new_operation_id()).map_err(internal_and_log)?;
+    let staging = StagedFile(state.storage.upload_path(user.uuid, operation));
+    let received = tokio::time::timeout(std::time::Duration::from_secs(60), async {
+        let mut file = fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&staging.0)
+            .await
+            .map_err(internal_and_log)?;
+        let mut stream = body.into_data_stream();
+        let mut total = 0u64;
+        while let Some(chunk) = stream.next().await {
+            // The adapter's existing DefaultBodyLimit is still authoritative.
+            let bytes = chunk.map_err(|_| ApiError::PayloadTooLarge)?;
+            total = total
+                .checked_add(bytes.len() as u64)
+                .ok_or(ApiError::PayloadTooLarge)?;
+            if total > limit {
+                return Err(ApiError::PayloadTooLarge);
+            }
+            super::session::authenticate(state, token)?;
+            file.write_all(&bytes).await.map_err(internal_and_log)?;
+        }
+        file.sync_all().await.map_err(internal_and_log)?;
+        drop(file);
+        let path = staging.0.clone();
+        tokio::task::spawn_blocking(move || super::package::inspect(&path))
+            .await
+            .map_err(internal_and_log)?
+            .map_err(legacy_error)?;
+        fs::rename(&staging.0, legacy_path(user.uuid, false))
+            .await
+            .map_err(internal_and_log)
+    })
+    .await
+    .map_err(|_| ApiError::BadRequest)?;
+    received?;
     ensure_legacy_import(state, user.uuid, true)
         .await
         .map_err(legacy_error)
 }
 
 pub async fn write_legacy(owner: Uuid, temporary: bool, bytes: &[u8]) -> ApiResult<()> {
-    fs::write(legacy_path(owner, temporary), bytes)
+    let inspection = bytes.to_vec();
+    tokio::task::spawn_blocking(move || super::package::inspect_bytes(&inspection))
+        .await
+        .map_err(|_| ApiError::Internal)?
+        .map_err(legacy_error)?;
+    let target = legacy_path(owner, temporary);
+    let staging = StagedFile(target.with_extension(format!("{}.part", new_operation_id())));
+    fs::write(&staging.0, bytes)
+        .await
+        .map_err(internal_and_log)?;
+    fs::File::open(&staging.0)
+        .await
+        .map_err(internal_and_log)?
+        .sync_all()
+        .await
+        .map_err(internal_and_log)?;
+    fs::rename(&staging.0, target)
         .await
         .map_err(internal_and_log)
+}
+
+async fn copy_bounded(
+    source: &std::path::Path,
+    target: &std::path::Path,
+    limit: u64,
+) -> Result<u64, ErrorCode> {
+    use tokio::io::AsyncReadExt;
+    let source = fs::File::open(source)
+        .await
+        .map_err(|_| ErrorCode::Internal)?;
+    let mut source = source.take(limit.saturating_add(1));
+    let mut target = fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(target)
+        .await
+        .map_err(|_| ErrorCode::Internal)?;
+    let count = tokio::io::copy(&mut source, &mut target)
+        .await
+        .map_err(|_| ErrorCode::Internal)?;
+    if count > limit {
+        return Err(ErrorCode::LimitExceeded);
+    }
+    target.sync_all().await.map_err(|_| ErrorCode::Internal)?;
+    Ok(count)
+}
+
+async fn raw_file_hash(path: &std::path::Path) -> Result<Vec<u8>, ErrorCode> {
+    use tokio::io::AsyncReadExt;
+    let mut file = fs::File::open(path)
+        .await
+        .map_err(|_| ErrorCode::Internal)?;
+    let mut hash = ring::digest::Context::new(&ring::digest::SHA256);
+    let mut buffer = [0; 8192];
+    loop {
+        let count = file
+            .read(&mut buffer)
+            .await
+            .map_err(|_| ErrorCode::Internal)?;
+        if count == 0 {
+            break;
+        }
+        hash.update(&buffer[..count]);
+    }
+    Ok(hash.finish().as_ref().to_vec())
 }
 
 pub async fn download_legacy(
     state: &AppState,
     owner: Uuid,
     requesting_self: bool,
-) -> ApiResult<Vec<u8>> {
+    supports_ysm: bool,
+) -> ApiResult<axum::response::Response> {
+    use axum::response::IntoResponse;
+    use tokio::io::AsyncReadExt;
     let temporary_path = legacy_path(owner, true);
     let temporary = requesting_self && temporary_path.exists();
     let path = if temporary {
+        if !supports_ysm {
+            let path = temporary_path.clone();
+            let identity = tokio::task::spawn_blocking(move || super::package::inspect(&path))
+                .await
+                .map_err(|_| ApiError::Internal)?
+                .map_err(legacy_error)?;
+            if identity.model_type != ModelType::ModelFigura {
+                return Err(ApiError::NotFound);
+            }
+        }
         temporary_path
     } else {
         ensure_legacy_import(state, owner, false)
             .await
             .map_err(legacy_error)?;
         let equipped = state.storage.equipped(owner).map_err(legacy_error)?;
-        let avatar = equipped.figura_compatibility.ok_or(ApiError::NotFound)?;
+        let avatar = if supports_ysm {
+            equipped.primary
+        } else {
+            equipped.figura_compatibility
+        }
+        .ok_or(ApiError::NotFound)?;
         state
             .storage
             .blob_path(&avatar.raw_sha256)
             .map_err(legacy_error)?
     };
-    let bytes = fs::read(&path).await.map_err(|_| ApiError::NotFound)?;
+    let file = fs::File::open(&path)
+        .await
+        .map_err(|_| ApiError::NotFound)?;
+    let length = file.metadata().await.map_err(internal_and_log)?.len();
     if temporary {
-        fs::remove_file(path).await.map_err(internal_and_log)?;
+        // Windows permits deleting an open Tokio file; the handle serves this one-shot body.
+        fs::remove_file(&path).await.map_err(internal_and_log)?;
     }
-    Ok(bytes)
+    let body = axum::body::Body::from_stream(tokio_util::io::ReaderStream::new(file.take(length)));
+    Ok((
+        [
+            ("content-type", "application/octet-stream"),
+            ("content-length", &length.to_string()),
+        ],
+        body,
+    )
+        .into_response())
 }
 
 pub async fn delete_legacy(state: &AppState, token: &str) -> ApiResult<()> {

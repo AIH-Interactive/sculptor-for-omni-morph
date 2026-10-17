@@ -16,6 +16,10 @@ pub enum ApiError {
     NotFound, // 404
     #[error("not acceptable")]
     NotAcceptable, // 406
+    #[error("payload too large")]
+    PayloadTooLarge, // 413
+    #[error("too many requests")]
+    TooManyRequests, // 429
     #[error("internal server error")]
     Internal, // 500
 }
@@ -28,6 +32,8 @@ impl IntoResponse for ApiError {
             ApiError::Forbidden=> (StatusCode::FORBIDDEN, "forbidden").into_response(),
             ApiError::NotAcceptable=> (StatusCode::NOT_ACCEPTABLE, "not acceptable").into_response(),
             ApiError::NotFound => (StatusCode::NOT_FOUND, "not found").into_response(),
+            ApiError::PayloadTooLarge => (StatusCode::PAYLOAD_TOO_LARGE, "payload too large").into_response(),
+            ApiError::TooManyRequests => (StatusCode::TOO_MANY_REQUESTS, "too many requests").into_response(),
             ApiError::Internal => (StatusCode::INTERNAL_SERVER_ERROR, "internal server error").into_response(),
         }
     }

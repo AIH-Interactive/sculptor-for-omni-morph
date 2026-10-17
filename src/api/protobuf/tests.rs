@@ -35,7 +35,14 @@ impl Client {
         let Some(envelope::Body::HelloAck(capabilities)) = capabilities.body else {
             panic!("capabilities missing");
         };
-        assert_eq!(capabilities.capabilities, vec![Capability::Figura as i32]);
+        assert_eq!(
+            capabilities.capabilities,
+            vec![
+                Capability::Figura as i32,
+                Capability::YsmPlain as i32,
+                Capability::YsmEncrypted as i32
+            ]
+        );
         let request = Envelope {
             major: 1,
             request_id: 1,
@@ -543,4 +550,445 @@ pub async fn integration(base: &str, http: &reqwest::Client, state: &AppState, r
             .unwrap(),
         ErrorCode::Unauthenticated,
     );
+    ysm_resources(base, http, state, raw).await;
+    failed_ysm_uploads(base, http, state).await;
+    cancelled_legacy_upload(base, state).await;
+}
+
+async fn cancelled_legacy_upload(base: &str, state: &AppState) {
+    use tokio::io::AsyncWriteExt;
+    let owner = Uuid::from_u128(403);
+    state
+        .user_manager
+        .insert(
+            owner,
+            "cancel-upload".into(),
+            Userinfo {
+                uuid: owner,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    let directory = state
+        .storage
+        .upload_path(owner, Uuid::nil())
+        .parent()
+        .unwrap()
+        .to_owned();
+    let prefix = owner.to_string();
+    let has_staging_file = || {
+        std::fs::read_dir(&directory).unwrap().any(|entry| {
+            entry
+                .unwrap()
+                .file_name()
+                .to_string_lossy()
+                .starts_with(&prefix)
+        })
+    };
+    let address = base.strip_prefix("http://").unwrap();
+    let mut socket = TcpStream::connect(address).await.unwrap();
+    socket.write_all(format!("PUT /api/avatar HTTP/1.1\r\nHost: {address}\r\ntoken: cancel-upload\r\nTransfer-Encoding: chunked\r\n\r\n8\r\npending!\r\n").as_bytes()).await.unwrap();
+    tokio::time::timeout(Duration::from_secs(2), async {
+        while !has_staging_file() {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .unwrap();
+    let mut client = Client::login(base, &reqwest::Client::new(), "cancel-upload", 1).await;
+    let (raw, content) = crate::service::package::tests::fixture(false, false);
+    let descriptor = AvatarDescriptor {
+        asset_id: "concurrency".into(),
+        model_type: ModelType::ModelYsmPlain as i32,
+        distribution_format: DistributionFormat::YsmDistributionPackage as i32,
+        raw_sha256: crate::storage::sha256(&raw),
+        raw_length: raw.len() as u64,
+        content_sha256: content,
+        schema_sha256: vec![1; 32],
+        ..Default::default()
+    };
+    assert!(matches!(
+        client
+            .rpc(envelope::Body::UploadRequest(UploadRequest {
+                operation_id: resource::new_operation_id(),
+                resource: Some(descriptor.clone()),
+            }))
+            .await,
+        envelope::Body::TransferGrant(_)
+    ));
+    let blocked = UploadRequest {
+        operation_id: resource::new_operation_id(),
+        resource: Some(descriptor),
+    };
+    error(
+        client
+            .rpc(envelope::Body::UploadRequest(blocked.clone()))
+            .await,
+        ErrorCode::LimitExceeded,
+    );
+    drop(socket); // No terminating HTTP chunk: the body was cancelled before publication.
+    tokio::time::timeout(Duration::from_secs(2), async {
+        while has_staging_file() {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .unwrap();
+    assert!(!resource::legacy_path(owner, false).exists());
+    assert!(state.storage.equipped(owner).unwrap().primary.is_none());
+    assert!(matches!(
+        client.rpc(envelope::Body::UploadRequest(blocked)).await,
+        envelope::Body::TransferGrant(_)
+    ));
+}
+
+async fn failed_ysm_uploads(base: &str, http: &reqwest::Client, state: &AppState) {
+    use envelope::Body;
+    let owner = Uuid::from_u128(402);
+    state
+        .user_manager
+        .insert(
+            owner,
+            "upload-failures".into(),
+            Userinfo {
+                uuid: owner,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    let mut client = Client::login(base, http, "upload-failures", 1).await;
+    let (raw, identity) = crate::service::package::tests::fixture(true, false);
+    let descriptor = AvatarDescriptor {
+        asset_id: "failed".into(),
+        model_type: ModelType::ModelYsmPlain as i32,
+        distribution_format: DistributionFormat::YsmDistributionPackage as i32,
+        raw_sha256: crate::storage::sha256(&raw),
+        raw_length: raw.len() as u64,
+        content_sha256: identity,
+        schema_sha256: vec![7; 32],
+        ..Default::default()
+    };
+    let operation = resource::new_operation_id();
+    let request = UploadRequest {
+        operation_id: operation.clone(),
+        resource: Some(descriptor.clone()),
+    };
+    let Body::TransferGrant(grant) = client.rpc(Body::UploadRequest(request.clone())).await else {
+        panic!("missing grant");
+    };
+    let mut conflict = request;
+    conflict.resource.as_mut().unwrap().asset_id = "different".into();
+    error(
+        client.rpc(Body::UploadRequest(conflict)).await,
+        ErrorCode::Conflict,
+    );
+    let mut spare = descriptor.clone();
+    spare.asset_id = "spare".into();
+    assert!(matches!(
+        client
+            .rpc(Body::UploadRequest(UploadRequest {
+                operation_id: resource::new_operation_id(),
+                resource: Some(spare),
+            }))
+            .await,
+        Body::TransferGrant(_)
+    ));
+    let third = UploadRequest {
+        operation_id: resource::new_operation_id(),
+        resource: Some(descriptor),
+    };
+    error(
+        client.rpc(Body::UploadRequest(third.clone())).await,
+        ErrorCode::LimitExceeded,
+    );
+    assert_eq!(
+        http.put(format!("{base}/api/avatar"))
+            .header("token", "upload-failures")
+            .body(raw.clone())
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        429
+    );
+    let path = state
+        .storage
+        .upload_path(owner, Uuid::parse_str(&operation).unwrap());
+    let mut wrong_hash = raw.clone();
+    wrong_hash[0] ^= 1;
+    let mut oversized = raw.clone();
+    oversized.push(0);
+    for (body, expected) in [
+        (wrong_hash, ErrorCode::InvalidMessage),
+        (oversized, ErrorCode::LimitExceeded),
+        (raw[..raw.len() - 1].to_vec(), ErrorCode::InvalidMessage),
+    ] {
+        let rejected = http
+            .put(format!("{base}{}", grant.relative_path))
+            .bearer_auth(&client.scope.session_id)
+            .header("x-omnimorph-epoch", 1)
+            .header("content-type", "application/octet-stream")
+            .body(body)
+            .send()
+            .await
+            .unwrap();
+        error(
+            Envelope::decode(rejected.bytes().await.unwrap())
+                .unwrap()
+                .body
+                .unwrap(),
+            expected,
+        );
+        assert!(!path.exists(), "failed raw transfer left a temporary file");
+    }
+    let uploaded = http
+        .put(format!("{base}{}", grant.relative_path))
+        .bearer_auth(&client.scope.session_id)
+        .header("x-omnimorph-epoch", 1)
+        .header("content-type", "application/octet-stream")
+        .body(raw.clone())
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(uploaded.status(), 204);
+    error(
+        client
+            .rpc(Body::CommitUpload(CommitUpload {
+                operation_id: operation,
+                raw_sha256: crate::storage::sha256(&raw),
+                raw_length: raw.len() as u64,
+            }))
+            .await,
+        ErrorCode::InvalidMessage,
+    );
+    assert!(
+        !path.exists(),
+        "failed container commit left a temporary file"
+    );
+    assert!(state.storage.avatar(owner, "failed", 1).is_err());
+    assert!(state.storage.equipped(owner).unwrap().primary.is_none());
+    assert!(matches!(
+        client.rpc(Body::UploadRequest(third)).await,
+        Body::TransferGrant(_)
+    ));
+}
+
+async fn upload_resource(
+    client: &mut Client,
+    descriptor: AvatarDescriptor,
+    bytes: &[u8],
+) -> AvatarDescriptor {
+    use envelope::Body;
+    let operation = resource::new_operation_id();
+    let Body::TransferGrant(grant) = client
+        .rpc(Body::UploadRequest(UploadRequest {
+            operation_id: operation.clone(),
+            resource: Some(descriptor),
+        }))
+        .await
+    else {
+        panic!("missing grant");
+    };
+    let uploaded = client
+        .http
+        .put(format!("{}{}", client.base, grant.relative_path))
+        .bearer_auth(&client.scope.session_id)
+        .header("x-omnimorph-epoch", client.epoch)
+        .header("content-type", "application/octet-stream")
+        .body(bytes.to_vec())
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(uploaded.status(), 204);
+    let commit = CommitUpload {
+        operation_id: operation,
+        raw_sha256: crate::storage::sha256(bytes),
+        raw_length: bytes.len() as u64,
+    };
+    let Body::Avatar(avatar) = client.rpc(Body::CommitUpload(commit.clone())).await else {
+        panic!("missing commit");
+    };
+    assert_eq!(
+        client.rpc(Body::CommitUpload(commit)).await,
+        Body::Avatar(avatar.clone())
+    );
+    avatar
+}
+
+async fn ysm_resources(base: &str, http: &reqwest::Client, state: &AppState, figura: &[u8]) {
+    use envelope::Body;
+    let owner = Uuid::from_u128(401);
+    state
+        .user_manager
+        .insert(
+            owner,
+            "ysm-owner".into(),
+            Userinfo {
+                uuid: owner,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    let mut client = Client::login(base, http, "ysm-owner", 1).await;
+    // Preserve a separate Figura projection before selecting a YSM primary.
+    assert_eq!(
+        http.put(format!("{base}/api/avatar"))
+            .header("token", "ysm-owner")
+            .body(figura.to_vec())
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        200
+    );
+    let figura_equipped = state.storage.equipped(owner).unwrap();
+    let mut revision = figura_equipped.revision;
+    for encrypted in [false, true] {
+        let (bytes, content_hash) = crate::service::package::tests::fixture(encrypted, false);
+        let model_type = if encrypted {
+            ModelType::ModelYsmEncrypted
+        } else {
+            ModelType::ModelYsmPlain
+        };
+        let descriptor = AvatarDescriptor {
+            owner: owner.to_string(),
+            asset_id: if encrypted { "encrypted" } else { "plain" }.into(),
+            model_type: model_type as i32,
+            distribution_format: DistributionFormat::YsmDistributionPackage as i32,
+            raw_sha256: crate::storage::sha256(&bytes),
+            raw_length: bytes.len() as u64,
+            content_sha256: content_hash,
+            schema_sha256: crate::storage::sha256(b"synthetic-schema"),
+            required_capabilities: vec![model_type as i32],
+            ..Default::default()
+        };
+        let avatar = upload_resource(&mut client, descriptor, &bytes).await;
+        assert_eq!(avatar.model_type, model_type as i32);
+        assert_ne!(avatar.raw_sha256, avatar.content_sha256);
+        let Body::Equipped(equipped) = client
+            .rpc(Body::Equip(Equip {
+                operation_id: resource::new_operation_id(),
+                asset_id: avatar.asset_id.clone(),
+                asset_revision: avatar.revision,
+                expected_revision: revision,
+                retain_figura_compatibility: !encrypted,
+                ..Default::default()
+            }))
+            .await
+        else {
+            panic!("missing equipment");
+        };
+        assert_eq!(equipped.primary.as_ref(), Some(&avatar));
+        assert_eq!(equipped.figura_compatibility.is_some(), !encrypted);
+        let profile: serde_json::Value = http
+            .get(format!("{base}/api/{owner}"))
+            .header("token", "legacy-watcher")
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        assert_eq!(
+            profile["equipped"].as_array().unwrap().len(),
+            usize::from(!encrypted)
+        );
+        let old = http
+            .get(format!("{base}/api/{owner}/avatar"))
+            .header("token", "legacy-watcher")
+            .send()
+            .await
+            .unwrap();
+        if encrypted {
+            assert_eq!(old.status(), 404);
+        } else {
+            assert_eq!(old.bytes().await.unwrap().as_ref(), figura);
+        }
+
+        // The extended Figura adapter opts in explicitly; original clients never get YSM bytes.
+        let extended = http
+            .get(format!("{base}/api/{owner}/avatar"))
+            .header("token", "legacy-watcher")
+            .header("x-omnimorph-models", "ysm")
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(extended.bytes().await.unwrap().as_ref(), bytes);
+        let Body::TransferGrant(grant) = client
+            .rpc(Body::DownloadRequest(DownloadRequest {
+                owner: owner.to_string(),
+                asset_id: avatar.asset_id.clone(),
+                revision: avatar.revision,
+            }))
+            .await
+        else {
+            panic!("missing download grant");
+        };
+        let downloaded = client.file(&grant.relative_path).await;
+        assert_eq!(
+            downloaded.headers()["content-type"],
+            "application/octet-stream"
+        );
+        assert_eq!(downloaded.bytes().await.unwrap().as_ref(), bytes);
+        assert!(matches!(
+            client
+                .rpc(Body::Delete(Delete {
+                    operation_id: resource::new_operation_id(),
+                    asset_id: avatar.asset_id,
+                    expected_revision: avatar.revision,
+                }))
+                .await,
+            Body::Ack(_)
+        ));
+        assert_eq!(client.file(&grant.relative_path).await.status(), 404);
+        assert!(state.storage.equipped(owner).unwrap().primary.is_none());
+        assert_eq!(
+            http.put(format!("{base}/api/avatar"))
+                .header("token", "ysm-owner")
+                .header("content-type", "application/octet-stream")
+                .body(bytes.clone())
+                .send()
+                .await
+                .unwrap()
+                .status(),
+            200
+        );
+        let imported = state.storage.equipped(owner).unwrap();
+        assert_eq!(
+            imported.primary.as_ref().unwrap().model_type,
+            model_type as i32
+        );
+        assert_eq!(
+            imported.primary.as_ref().unwrap().raw_sha256,
+            crate::storage::sha256(&bytes)
+        );
+        assert!(imported.figura_compatibility.is_none());
+        let legacy = http
+            .get(format!("{base}/api/{owner}/avatar"))
+            .header("token", "legacy-watcher")
+            .header("x-omnimorph-models", "ysm")
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(legacy.bytes().await.unwrap().as_ref(), bytes);
+        assert_eq!(
+            http.get(format!("{base}/api/{owner}/avatar"))
+                .header("token", "legacy-watcher")
+                .send()
+                .await
+                .unwrap()
+                .status(),
+            404
+        );
+        assert_eq!(
+            http.delete(format!("{base}/api/avatar"))
+                .header("token", "ysm-owner")
+                .send()
+                .await
+                .unwrap()
+                .status(),
+            200
+        );
+        revision = state.storage.equipped(owner).unwrap().revision;
+    }
 }

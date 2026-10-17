@@ -122,7 +122,11 @@ pub async fn hello_ack(state: &AppState) -> HelloAck {
     HelloAck {
         selected_major: 1,
         instance_id: state.protocol_sessions.instance_id.clone(),
-        capabilities: vec![Capability::Figura as i32],
+        capabilities: vec![
+            Capability::Figura as i32,
+            Capability::YsmPlain as i32,
+            Capability::YsmEncrypted as i32,
+        ],
         limits: Some(limits(state).await),
         heartbeat_seconds: 20,
         server_epoch: state.protocol_sessions.server_epoch,

@@ -180,31 +180,6 @@ impl Storage {
             == Some(hash)
     }
 
-    pub fn publish_blob(&self, bytes: &[u8], hash: &[u8]) -> Result<()> {
-        let _publication = self
-            .blob_publication
-            .lock()
-            .map_err(|_| ErrorCode::Internal)?;
-        if sha256(bytes) != hash {
-            return Err(ErrorCode::InvalidMessage);
-        }
-        let path = self.blob_path(hash)?;
-        if path.exists() {
-            let existing = fs::read(path).map_err(|_| ErrorCode::Internal)?;
-            return if sha256(&existing) == hash {
-                Ok(())
-            } else {
-                Err(ErrorCode::Internal)
-            };
-        }
-        let temporary = path.with_extension("next");
-        let mut file = fs::File::create(&temporary).map_err(|_| ErrorCode::Internal)?;
-        file.write_all(bytes).map_err(|_| ErrorCode::Internal)?;
-        file.sync_all().map_err(|_| ErrorCode::Internal)?;
-        drop(file);
-        fs::rename(temporary, path).map_err(|_| ErrorCode::Internal)
-    }
-
     pub fn import_legacy(
         &self,
         mut avatar: AvatarDescriptor,
@@ -225,11 +200,8 @@ impl Storage {
                     let current = AvatarDescriptor::decode(stored.descriptor.as_slice())
                         .map_err(|_| ErrorCode::Internal)?;
                     if force_equipped && current.raw_sha256 == avatar.raw_sha256 {
-                        select(
-                            account,
-                            Some(asset_ref(&current)),
-                            Some(asset_ref(&current)),
-                        );
+                        let compatibility = (current.model_type == 1).then(|| asset_ref(&current));
+                        select(account, Some(asset_ref(&current)), compatibility);
                     }
                     if current.raw_sha256 == avatar.raw_sha256 {
                         return Ok(current);
@@ -249,7 +221,8 @@ impl Storage {
                     tombstone: false,
                 },
             );
-            select(account, Some(asset_ref(&avatar)), Some(asset_ref(&avatar)));
+            let compatibility = (avatar.model_type == 1).then(|| asset_ref(&avatar));
+            select(account, Some(asset_ref(&avatar)), compatibility);
             Ok(avatar.clone())
         })
     }
@@ -363,11 +336,14 @@ impl Storage {
                     .ok_or(ErrorCode::NotFound)?;
                 let descriptor = AvatarDescriptor::decode(avatar.descriptor.as_slice())
                     .map_err(|_| ErrorCode::Internal)?;
-                if descriptor.model_type != 1 {
-                    return Err(ErrorCode::UnsupportedCapability);
-                }
                 let reference = Some(asset_ref(&descriptor));
-                select(account, reference.clone(), reference);
+                let compatibility = match descriptor.model_type {
+                    1 => reference.clone(),
+                    2 | 3 if request.retain_figura_compatibility => account.compatibility.clone(),
+                    2 | 3 => None,
+                    _ => return Err(ErrorCode::UnsupportedCapability),
+                };
+                select(account, reference, compatibility);
             }
             let result = equipment(owner, Some(account))?;
             remember(

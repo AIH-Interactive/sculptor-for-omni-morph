@@ -156,12 +156,17 @@ async fn legacy_http_baseline() {
         config: Arc::new(RwLock::new(config)),
         figura_versions: Arc::new(RwLock::new(None)),
     };
+    let capture = super::capture::Capture::default();
     let router = Router::new()
         .nest("/api", crate::legacy_api(1024))
         .route("/api/", get(crate::check_auth))
         .route("/ws", get(crate::api::figura::ws))
         .merge(crate::api::protobuf::router())
-        .with_state(state.clone());
+        .with_state(state.clone())
+        .layer(axum::middleware::from_fn_with_state(
+            capture.clone(),
+            super::capture::requests,
+        ));
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
     let (stop, stopped) = tokio::sync::oneshot::channel::<()>();
@@ -282,6 +287,13 @@ async fn legacy_http_baseline() {
     );
     crate::service::tests::legacy_lifecycle(&base, &client, &state, &resource, owner).await;
     crate::api::protobuf::tests::integration(&base, &client, &state, &resource).await;
+    capture.assert_raw_upload(&resource, true);
+    capture.assert_raw_upload(&resource, false);
+    for encrypted in [false, true] {
+        let (bytes, _) = crate::service::package::tests::fixture(encrypted, false);
+        capture.assert_raw_upload(&bytes, false);
+        capture.assert_raw_upload(&bytes, true);
+    }
     stop.send(()).unwrap();
     server.await.unwrap();
 }

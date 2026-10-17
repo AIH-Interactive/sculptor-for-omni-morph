@@ -7,4 +7,6 @@ pub mod v1 {
 pub mod wire;
 
 #[cfg(test)]
+mod capture;
+#[cfg(test)]
 mod tests;

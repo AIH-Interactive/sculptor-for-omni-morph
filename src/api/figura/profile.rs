@@ -2,7 +2,7 @@ use std::ops::Add;
 use std::path::PathBuf;
 use std::time::{Duration, SystemTime};
 use axum::{
-    body::Bytes, extract::{Path, State}, Json
+    extract::{Path, State, Request}, http::HeaderMap, response::Response, Json, RequestExt
 };
 use tracing::debug;
 use serde_json::{json, Value};
@@ -25,6 +25,7 @@ pub async fn user_info(
     Path(uuid): Path<Uuid>,
     Token(token): Token,
     State(state): State<AppState>,
+    headers: HeaderMap,
 ) -> ApiResult<Json<Value>> {
     crate::service::session::authenticate(&state, &token)?;
     tracing::info!("Receiving profile information for {}", uuid);
@@ -83,15 +84,24 @@ pub async fn user_info(
 
     let hash = if use_temp {
         if fs::metadata(&avatar_file).await.is_ok() {
-            calculate_file_sha256(&avatar_file).ok()
+            let path = PathBuf::from(&avatar_file);
+            let identity = tokio::task::spawn_blocking(move || crate::service::package::inspect(&path))
+                .await.map_err(|_| ApiError::Internal)?
+                .map_err(crate::service::resource::legacy_error)?;
+            if supports_ysm(&headers) || identity.model_type as i32 == 1 {
+                calculate_file_sha256(&avatar_file).ok()
+            } else {
+                None
+            }
         } else {
             None
         }
     } else {
         crate::service::resource::ensure_legacy_import(&state, uuid, false).await
             .map_err(crate::service::resource::legacy_error)?;
-        state.storage.equipped(uuid).map_err(crate::service::resource::legacy_error)?
-            .figura_compatibility.map(|avatar| avatar.legacy_figura_hash)
+        let equipped = state.storage.equipped(uuid).map_err(crate::service::resource::legacy_error)?;
+        let selected = if supports_ysm(&headers) { equipped.primary } else { equipped.figura_compatibility };
+        selected.map(|avatar| avatar.legacy_figura_hash)
     };
     if let Some(hash) = hash {
         user_info_response["equipped"].as_array_mut().unwrap().push(json!({
@@ -104,21 +114,27 @@ pub async fn user_info(
 pub async fn download_avatar(
     Path(uuid): Path<Uuid>,
     Token(token): Token,
-    State(state): State<AppState>
-) -> ApiResult<Vec<u8>> {
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> ApiResult<Response> {
     crate::service::session::authenticate(&state, &token)?;
     let str_uuid = format_uuid(&uuid);
     tracing::info!("Requesting an avatar: {}", str_uuid);
 
-    crate::service::resource::download_legacy(&state, uuid, is_requesting_self(uuid, &state, &token)).await
+    crate::service::resource::download_legacy(&state, uuid, is_requesting_self(uuid, &state, &token), supports_ysm(&headers)).await
+}
+
+/// Explicit model capability for the extended Figura adapter; absent in upstream clients.
+fn supports_ysm(headers: &HeaderMap) -> bool {
+    headers.get("x-omnimorph-models").and_then(|value| value.to_str().ok()) == Some("ysm")
 }
 
 pub async fn upload_avatar(
     Token(token): Token,
     State(state): State<AppState>,
-    body: Bytes,
+    request: Request,
 ) -> ApiResult<String> {
-    crate::service::resource::upload_legacy(&state, &token, &body).await?;
+    crate::service::resource::upload_legacy(&state, &token, request.into_limited_body()).await?;
     Ok("ok".to_string())
 }
 

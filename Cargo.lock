@@ -2124,6 +2124,7 @@ dependencies = [
  "dashmap",
  "dotenvy",
  "faster-hex",
+ "flate2",
  "futures-util",
  "indexmap 2.6.0",
  "lazy_static",
