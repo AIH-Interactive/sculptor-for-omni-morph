@@ -1,0 +1,93 @@
+name: Backend executables
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main, master]
+    tags: ["v*"]
+  pull_request:
+    branches: [main, master]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: backend-build-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+defaults:
+  run:
+    shell: pwsh
+
+jobs:
+  build:
+    name: ${{ matrix.platform }} x86_64
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: Windows
+            runner: windows-2022
+            target: x86_64-pc-windows-msvc
+            archive: omni-morph-backend-windows-x86_64.zip
+          - platform: Linux
+            runner: ubuntu-22.04
+            target: x86_64-unknown-linux-gnu
+            archive: omni-morph-backend-linux-x86_64.tar.gz
+    env:
+      BUILD_TARGET: ${{ matrix.target }}
+
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Install Linux native dependencies
+        if: runner.os == 'Linux'
+        run: |
+          & sudo apt-get update 2>&1 | Tee-Object -FilePath build.log
+          $buildExitCode = $LASTEXITCODE
+          if ($buildExitCode -ne 0) { Get-Content build.log -Tail 40; exit $buildExitCode }
+          & sudo apt-get install --yes pkg-config libssl-dev 2>&1 | Tee-Object -FilePath build.log -Append
+          $buildExitCode = $LASTEXITCODE
+          if ($buildExitCode -ne 0) { Get-Content build.log -Tail 40; exit $buildExitCode }
+
+      - name: Install stable Rust target
+        run: |
+          & rustup toolchain install stable --profile minimal --target $env:BUILD_TARGET 2>&1 | Tee-Object -FilePath build.log -Append
+          $buildExitCode = $LASTEXITCODE
+          if ($buildExitCode -ne 0) { Get-Content build.log -Tail 40; exit $buildExitCode }
+
+      - name: Test, build and package executable
+        run: ./.github/scripts/build-backend.ps1 -Target $env:BUILD_TARGET
+
+      - name: Upload downloadable executable bundle
+        id: artifact
+        uses: actions/upload-artifact@v7
+        with:
+          path: dist/${{ matrix.archive }}
+          archive: false
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Add download link to run summary
+        env:
+          ARTIFACT_URL: ${{ steps.artifact.outputs.artifact-url }}
+          ARTIFACT_NAME: ${{ matrix.archive }}
+        run: |
+          "### $env:BUILD_TARGET" | Add-Content -LiteralPath $env:GITHUB_STEP_SUMMARY
+          "[Download $env:ARTIFACT_NAME]($env:ARTIFACT_URL)" | Add-Content -LiteralPath $env:GITHUB_STEP_SUMMARY
+
+      - name: Upload build log on failure
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: backend-build-log-${{ matrix.target }}
+          path: build.log
+          if-no-files-found: ignore
+          retention-days: 14
