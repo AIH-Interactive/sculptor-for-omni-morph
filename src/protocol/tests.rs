@@ -287,6 +287,7 @@ async fn legacy_http_baseline() {
     );
     crate::service::tests::legacy_lifecycle(&base, &client, &state, &resource, owner).await;
     crate::api::protobuf::tests::integration(&base, &client, &state, &resource).await;
+    crate::api::protobuf::tests::java_client::integration(&base, &state, &resource).await;
     let restart = crate::api::protobuf::tests::restart::prepare(&base, &client, &state).await;
     capture.assert_raw_upload(&resource, true);
     capture.assert_raw_upload(&resource, false);

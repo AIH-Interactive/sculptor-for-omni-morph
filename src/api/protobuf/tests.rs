@@ -12,6 +12,7 @@ use tokio_tungstenite::{
     MaybeTlsStream, WebSocketStream,
 };
 use uuid::Uuid;
+pub(crate) mod java_client;
 mod legacy_bridge;
 mod recovery;
 pub(crate) mod restart;
