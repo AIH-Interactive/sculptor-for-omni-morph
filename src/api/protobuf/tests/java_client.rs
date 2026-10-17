@@ -38,7 +38,7 @@ pub(crate) async fn integration(base: &str, state: &AppState, figura: &[u8]) {
         prerelease: "0.1.5".into(),
     });
     let arguments = [
-        "org.figuramc.figura.backend2.protocol.CloudAdapterIntegrationTest".to_string(),
+        "top.aihmc.omnimorph.backend2.protocol.CloudAdapterIntegrationTest".to_string(),
         base.to_string(),
         fixtures.path().to_string_lossy().into_owned(),
         owner.to_string(),

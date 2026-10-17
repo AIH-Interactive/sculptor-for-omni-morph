@@ -175,7 +175,7 @@ pub(super) async fn verify(root: &Path, binary: &Path, enabled: Option<bool>) {
     if enabled.is_none() && std::env::var_os("OMNIMORPH_CLIENT_CLASSPATH_FILE").is_some() {
         crate::api::protobuf::tests::java_client::execute(
             &[
-                "org.figuramc.figura.backend2.protocol.CloudAdapterIntegrationTest".into(),
+                "top.aihmc.omnimorph.backend2.protocol.CloudAdapterIntegrationTest".into(),
                 "--legacy".into(),
                 base.clone(),
                 token.clone(),
