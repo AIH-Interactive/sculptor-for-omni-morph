@@ -385,7 +385,7 @@ pub async fn ensure_legacy_import(
     owner: Uuid,
     force_equipped: bool,
 ) -> Result<(), ErrorCode> {
-    let path = legacy_path(owner, false);
+    let path = legacy_read_path(owner, false);
     if !path.exists() {
         return Ok(());
     }
@@ -435,6 +435,17 @@ pub async fn ensure_legacy_import(
 }
 
 pub fn legacy_path(owner: Uuid, temporary: bool) -> PathBuf {
+    let root = PathBuf::from(&*AVATARS_VAR);
+    let root = root.join(if temporary { "upload" } else { "models" });
+    root.join(format!("{owner}.moon"))
+}
+
+pub fn legacy_read_path(owner: Uuid, temporary: bool) -> PathBuf {
+    let canonical = legacy_path(owner, temporary);
+    // After layout migration, retained backups must not resurrect deleted models.
+    if canonical.exists() || PathBuf::from(&*AVATARS_VAR).join("models").is_dir() {
+        return canonical;
+    }
     let root = PathBuf::from(&*AVATARS_VAR);
     let root = if temporary { root.join("temp") } else { root };
     root.join(format!("{owner}.moon"))
@@ -497,7 +508,11 @@ pub async fn upload_legacy(state: &AppState, token: &str, body: axum::body::Body
             .await
             .map_err(internal_and_log)?
             .map_err(legacy_error)?;
-        fs::rename(&staging.0, legacy_path(user.uuid, false))
+        let target = legacy_path(user.uuid, false);
+        fs::create_dir_all(target.parent().ok_or(ApiError::Internal)?)
+            .await
+            .map_err(internal_and_log)?;
+        fs::rename(&staging.0, target)
             .await
             .map_err(internal_and_log)
     })
@@ -516,6 +531,9 @@ pub async fn write_legacy(
     bytes: &[u8],
 ) -> ApiResult<()> {
     let target = legacy_path(owner, temporary);
+    fs::create_dir_all(target.parent().ok_or(ApiError::Internal)?)
+        .await
+        .map_err(internal_and_log)?;
     let operation = operation_id(&new_operation_id()).map_err(legacy_error)?;
     let staging = StagedFile(state.storage.upload_path(owner, operation));
     fs::write(&staging.0, bytes)
@@ -591,7 +609,7 @@ pub async fn download_legacy(
 ) -> ApiResult<axum::response::Response> {
     use axum::response::IntoResponse;
     use tokio::io::AsyncReadExt;
-    let temporary_path = legacy_path(owner, true);
+    let temporary_path = legacy_read_path(owner, true);
     let temporary = requesting_self && temporary_path.exists();
     let path = if temporary {
         if !supports_ysm {
@@ -669,8 +687,8 @@ pub async fn delete_legacy_owner(state: &AppState, owner: Uuid) -> ApiResult<()>
             },
         )
         .map_err(legacy_error)?;
-    if avatar.asset_id == "avatar" && legacy_path(owner, false).exists() {
-        fs::remove_file(legacy_path(owner, false))
+    if avatar.asset_id == "avatar" && legacy_read_path(owner, false).exists() {
+        fs::remove_file(legacy_read_path(owner, false))
             .await
             .map_err(internal_and_log)?;
     }

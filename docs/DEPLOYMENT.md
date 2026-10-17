@@ -85,19 +85,21 @@ limitations.maxAvatarSize 的单位是十进制 KB，示例值 100 较小；按�
 
 旧 owner.moon 保留原字节，首次查询对应 owner 时惰性补建 cloud-v1 索引和不可变 blob，
 不解密 YSM、不转换原文件。重复导入同一内容不增加资源 revision，也不覆盖已选 YSM。
-cloud-v1/metadata.sqlite3 保存全部持久业务元数据：用户资料/封禁/上传权限、UUID 与模型版本关联、
+data/metadata.sqlite3 保存全部持久业务元数据：用户资料/封禁/上传权限、UUID 与模型版本关联、
 装备/兼容引用、删除 tombstone、幂等操作及 YSM 快照/水位/恢复尾部。SQLite user_version 当前为 1，
 未知版本拒绝启动，不猜测性改写。旧 schema_version=1 的 manifest.json 首次启动自动事务导入，
 保留原文件作为迁移来源；此后仅 SQLite 权威，不再双写旧 manifest。
-blobs 保存按原始 SHA-256 命名的分发字节，uploads 保存未提交的临时文件。
+data/avatars/models 保存按原始 SHA-256 命名的完整分发字节和历史 UUID .moon；data/avatars/upload 保存上传暂存。
 Figura 历史 hash 是 SHA-256(Base64(raw))，与原始文件 hash 不同，不可相互替代。
 
-所有上传入口（包括管理和临时模型入口）先写 uploads/*.part，再校验、发布文件并提交元数据；
+所有上传入口（包括管理和临时模型入口）先写 upload/*.part，再校验、发布文件并提交元数据；
 此目录不按 Figura/YSM 引擎分叉。文件校验与 blob 发布完成后才提交 SQLite 事务；不能把上传授权当作提交成功。
 进程在 COMMIT 前终止时，重新启动读取上一份已提交 SQLite 状态；不发布半成品。
-重启清理旧 uploads/*.part，因为上传授权不跨进程保留；不可变但未被引用的 blob 保留，
+重启清理旧 upload/*.part，因为上传授权不跨进程保留；不可变但未被引用的 blob 保留，
 不在启动期间冒险清理历史数据。服务重启后客户端重新认证，旧会话不复用。
-备份时停止服务，完整备份 cloud-v1（包含可能存在的 metadata.sqlite3-wal/-shm），不要只复制数据库主文件。
+备份时停止服务，完整备份 data/metadata.sqlite3 及其可能存在的 -wal/-shm、整个 AVATARS_FOLDER，不要只复制数据库主文件。
+旧布局首次启动自动复制到新目录并保留旧文件，SQLite backup 包含 WAL；细节见 [SQLITE.md](SQLITE.md)。
+AVATARS_FOLDER 自定义只改变模型/暂存根目录，SQLite 始终位于工作目录下的 data/metadata.sqlite3。
 旧系统从未持久化的账号名字无法凭空恢复；已知模型 owner UUID 会生成不带登录权限的资料，
 认证成功后补齐真实账号资料。上传令牌、连接、上传授权和临时请求状态仍只在内存中，不写入数据库。
 

@@ -16,8 +16,8 @@ fn sql_integer(value: u64) -> Result<i64> {
     i64::try_from(value).map_err(|_| ErrorCode::Internal)
 }
 
-pub(super) fn open(root: &Path) -> Result<(Connection, Manifest)> {
-    let mut database = Connection::open(root.join("metadata.sqlite3")).map_err(sql_error)?;
+pub(super) fn open(root: &Path, path: &Path) -> Result<(Connection, Manifest)> {
+    let mut database = Connection::open(path).map_err(sql_error)?;
     database
         .busy_timeout(std::time::Duration::from_secs(5))
         .map_err(sql_error)?;

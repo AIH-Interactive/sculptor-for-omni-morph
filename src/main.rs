@@ -127,11 +127,13 @@ async fn app() -> Result<bool> {
             fs::create_dir_all(path).await.expect("Can't create avatars folder!");
             tracing::info!("Created avatars directory");
         }
-        let temp_path = format!("{}/temp", *AVATARS_VAR);
+        let temp_path = format!("{}/upload", *AVATARS_VAR);
         let path1 = PathBuf::from(&temp_path);
         if !path1.exists() {
-            fs::create_dir_all(path1).await.expect("Can't create temp avatars folder!");
-            tracing::info!("Created temp avatars directory");
+            fs::create_dir_all(path1)
+                .await
+                .expect("Can't create temp avatars folder!");
+            tracing::info!("Created upload cache directory");
         }
     }
 
@@ -166,9 +168,16 @@ async fn app() -> Result<bool> {
     }
 
     // State
-    let storage = Arc::new(storage::Storage::open(PathBuf::from(&*AVATARS_VAR).join("cloud-v1"))
-        .map_err(|code| anyhow::anyhow!("Protocol storage startup failed: {code:?}"))?);
-    let protocol_sessions = Arc::new(service::session::ProtocolSessions::new(storage.instance_id()));
+    let storage = Arc::new(
+        storage::Storage::open_avatars(
+            PathBuf::from(&*AVATARS_VAR),
+            PathBuf::from("data/metadata.sqlite3"),
+        )
+        .map_err(|code| anyhow::anyhow!("Protocol storage startup failed: {code:?}"))?,
+    );
+    let protocol_sessions = Arc::new(service::session::ProtocolSessions::new(
+        storage.instance_id(),
+    ));
     let state = AppState {
         uptime: Instant::now(),
         user_manager: Arc::new(

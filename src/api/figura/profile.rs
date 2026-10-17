@@ -10,8 +10,9 @@ use tokio::fs;
 use uuid::Uuid;
 
 use crate::{
-    auth::Token, utils::{calculate_file_sha256, format_uuid},
-    ApiError, ApiResult, AppState, AVATARS_VAR
+    auth::Token,
+    utils::{calculate_file_sha256, format_uuid},
+    ApiError, ApiResult, AppState,
 };
 
 pub fn is_requesting_self(uuid: Uuid, state: &AppState, token: &String) -> bool {
@@ -34,8 +35,8 @@ pub async fn user_info(
 
     let request_temp_state = state.user_manager.request_temp_state(uuid, false);
     let request_self_avatar = is_requesting_self(uuid, &state, &token);
-    let temp_avatar_file = format!("{}/temp/{}.moon", *AVATARS_VAR, formatted_uuid);
-    let path = PathBuf::from(&temp_avatar_file);
+    let temp_avatar_file = crate::service::resource::legacy_read_path(uuid, true);
+    let path = temp_avatar_file.clone();
     let outdated = if path.exists() {
         let meta = path.metadata().unwrap();
         let last_modified = meta.modified().unwrap();
@@ -47,7 +48,7 @@ pub async fn user_info(
         state.user_manager.put_request_temp_state(uuid, true);
         temp_avatar_file
     } else {
-        format!("{}/{}.moon", *AVATARS_VAR, formatted_uuid)
+        crate::service::resource::legacy_read_path(uuid, false)
     };
 
     crate::service::resource::ensure_legacy_import(&state, uuid, false)

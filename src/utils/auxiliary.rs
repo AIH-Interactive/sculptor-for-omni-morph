@@ -177,7 +177,7 @@ pub fn format_uuid(uuid: &Uuid) -> String {
     uuid.as_hyphenated().to_string()
 }
 
-pub fn calculate_file_sha256(file_path: &str) -> Result<String, std::io::Error> {
+pub fn calculate_file_sha256(file_path: impl AsRef<Path>) -> Result<String, std::io::Error> {
     // Read the file content
     let mut file = File::open(file_path)?;
     let mut content = Vec::new();

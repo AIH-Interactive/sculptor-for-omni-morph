@@ -10,8 +10,11 @@ use std::{
 use uuid::Uuid;
 
 mod sqlite;
+mod layout;
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod layout_tests;
 
 pub type Result<T> = std::result::Result<T, ErrorCode>;
 
@@ -58,6 +61,8 @@ struct Manifest {
 /// The old .moon tree is never the destination of a new-protocol file upload.
 pub struct Storage {
     root: PathBuf,
+    uploads: PathBuf,
+    models: PathBuf,
     committed: Mutex<Manifest>,
     blob_publication: Mutex<()>,
     database: Mutex<rusqlite::Connection>,
@@ -83,14 +88,57 @@ pub fn sha256(bytes: &[u8]) -> Vec<u8> {
 }
 
 impl Storage {
+    #[cfg(test)]
     pub fn open(root: impl AsRef<Path>) -> Result<Self> {
         let root = root.as_ref().to_path_buf();
-        fs::create_dir_all(root.join("blobs")).map_err(|_| ErrorCode::Internal)?;
-        fs::create_dir_all(root.join("uploads")).map_err(|_| ErrorCode::Internal)?;
-        let (database, manifest) = sqlite::open(&root)?;
+        Self::open_paths(
+            root.clone(),
+            root.join("metadata.sqlite3"),
+            root.join("uploads"),
+            root.join("blobs"),
+        )
+    }
+
+    pub fn open_avatars(avatars: impl AsRef<Path>, database: impl AsRef<Path>) -> Result<Self> {
+        let avatars = avatars.as_ref();
+        let database = database.as_ref();
+        layout::migrate(avatars, database)?;
+        let storage = Self::open_paths(
+            avatars.join("cloud-v1"),
+            database.to_path_buf(),
+            avatars.join("upload"),
+            avatars.join("models"),
+        )?;
+        // Mark only after files and metadata are usable. Retained backups must not
+        // resurrect deleted models or consumed temporary uploads on later starts.
+        {
+            let database = storage.database.lock().map_err(|_| ErrorCode::Internal)?;
+            database
+                .execute(
+                    "INSERT INTO metadata(key, value) VALUES ('avatars_layout', 'models-upload-v1')
+                     ON CONFLICT(key) DO NOTHING",
+                    [],
+                )
+                .map_err(sqlite::sql_error)?;
+        }
+        Ok(storage)
+    }
+
+    fn open_paths(
+        root: PathBuf,
+        database_path: PathBuf,
+        uploads: PathBuf,
+        models: PathBuf,
+    ) -> Result<Self> {
+        fs::create_dir_all(&models).map_err(|_| ErrorCode::Internal)?;
+        fs::create_dir_all(&uploads).map_err(|_| ErrorCode::Internal)?;
+        if let Some(parent) = database_path.parent() {
+            fs::create_dir_all(parent).map_err(|_| ErrorCode::Internal)?;
+        }
+        let (database, manifest) = sqlite::open(&root, &database_path)?;
         // Upload grants live in memory. After restart no previous .part can be committed.
         // Never clean an unknown schema; keep immutable blobs from interrupted commits.
-        for entry in fs::read_dir(root.join("uploads")).map_err(|_| ErrorCode::Internal)? {
+        for entry in fs::read_dir(&uploads).map_err(|_| ErrorCode::Internal)? {
             let entry = entry.map_err(|_| ErrorCode::Internal)?;
             let path = entry.path();
             let is_file = entry
@@ -107,6 +155,8 @@ impl Storage {
         }
         let storage = Self {
             root,
+            uploads,
+            models,
             committed: Mutex::new(manifest),
             blob_publication: Mutex::new(()),
             database: Mutex::new(database),
@@ -124,16 +174,14 @@ impl Storage {
     }
 
     pub fn upload_path(&self, owner: Uuid, operation: Uuid) -> PathBuf {
-        self.root
-            .join("uploads")
-            .join(format!("{owner}-{operation}.part"))
+        self.uploads.join(format!("{owner}-{operation}.part"))
     }
 
     pub fn blob_path(&self, hash: &[u8]) -> Result<PathBuf> {
         if hash.len() != 32 {
             return Err(ErrorCode::InvalidMessage);
         }
-        Ok(self.root.join("blobs").join(faster_hex::hex_string(hash)))
+        Ok(self.models.join(faster_hex::hex_string(hash)))
     }
 
     fn transaction<T>(&self, change: impl FnOnce(&mut Manifest) -> Result<T>) -> Result<T> {
