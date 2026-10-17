@@ -1,5 +1,7 @@
 //! Library metadata operations. All methods run on the bounded blocking path.
 pub mod images;
+mod distribution;
+pub(crate) use distribution::{can_observe_model, event_visible, record_identity};
 pub mod transfers;
 pub mod uploads;
 use super::library_policy::{Actor, Moderation, Policy, Visibility};
@@ -154,7 +156,7 @@ const MODEL_SELECT: &str = "SELECT m.model_id, m.uploader_uuid, m.uploader_name_
     COALESCE((SELECT downloads FROM library_stats s WHERE s.model_id = m.model_id), 0),
     (SELECT count(*) FROM library_favorites f WHERE f.model_id = m.model_id),
     EXISTS(SELECT 1 FROM library_favorites f WHERE f.model_id = m.model_id AND f.player_uuid = :actor)
-    FROM library_models m";
+    FROM library_effective_models m";
 
 fn model_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Model> {
     let uploader: String = row.get(1)?;
@@ -369,7 +371,7 @@ impl Storage {
             };
             let total: i64 = database
                 .query_row(
-                    &format!("SELECT count(*) FROM library_models m WHERE {predicate}"),
+                    &format!("SELECT count(*) FROM library_effective_models m WHERE {predicate}"),
                     parameters,
                     |row| row.get(0),
                 )

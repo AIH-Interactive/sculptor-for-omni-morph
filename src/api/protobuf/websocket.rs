@@ -131,8 +131,9 @@ async fn serve(mut socket: WebSocket, state: AppState, scope: ScopedSession) {
                 outgoing = receiver.recv() => {
                     match outgoing.ok_or(ErrorCode::Offline)? {
                         SessionMessage::Event(event) => {
+                            state.protocol_sessions.authorize(&state, &scope.id, scope.epoch)?;
                             if !supports_ysm && matches!(&event, CloudEvent::Ysm { .. }) { continue; }
-                            if let Some(body) = event_body(&state, event)? {
+                            if let Some(body) = event_body(&state, scope.owner, event).await? {
                                 send(&mut socket, envelope(0, Some(&scope), body)).await?;
                             }
                         }
@@ -211,6 +212,7 @@ async fn handle(
                 let worker = subscription::spawn(
                     state.clone(),
                     owner,
+                    scope.owner,
                     cursors.remove(&owner),
                     sender.clone(),
                     supports_ysm,
@@ -236,6 +238,7 @@ async fn handle(
             let worker = subscription::spawn(
                 state.clone(),
                 owner,
+                scope.owner,
                 Some(cursor),
                 sender.clone(),
                 supports_ysm,
@@ -261,7 +264,14 @@ async fn handle(
     }
 }
 
-fn event_body(state: &AppState, event: CloudEvent) -> Result<Option<envelope::Body>, ErrorCode> {
+async fn event_body(
+    state: &AppState,
+    viewer: Uuid,
+    event: CloudEvent,
+) -> Result<Option<envelope::Body>, ErrorCode> {
+    if !crate::service::library::event_visible(state, viewer, &event).await? {
+        return Ok(None);
+    }
     use envelope::Body;
     match event {
         CloudEvent::FiguraPing {
@@ -276,8 +286,17 @@ fn event_body(state: &AppState, event: CloudEvent) -> Result<Option<envelope::Bo
             arguments,
         }))),
         CloudEvent::AvatarChanged { owner, tombstone } => {
+            let storage = state.storage.clone();
+            let equipped = crate::service::library::work(move || {
+                storage.library_project_equipped(owner, viewer)
+            })
+            .await?;
+            let tombstone = tombstone
+                || (owner != viewer
+                    && equipped.primary.is_none()
+                    && equipped.figura_compatibility.is_none());
             Ok(Some(Body::AvatarChanged(AvatarChanged {
-                equipped: Some(state.storage.equipped(owner)?),
+                equipped: Some(equipped),
                 tombstone,
             })))
         }

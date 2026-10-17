@@ -31,6 +31,19 @@ pub struct EventHub {
 }
 
 impl EventHub {
+    /// Refresh active observers after a library policy/hash change. Do not send
+    /// a removal to the owner's own session or reset their local selection.
+    pub fn invalidate_observers(&self) {
+        for channel in self.channels.iter() {
+            if channel.receiver_count() > 0 {
+                let _ = channel.send(CloudEvent::AvatarChanged {
+                    owner: *channel.key(),
+                    tombstone: false,
+                });
+            }
+        }
+    }
+
     fn request_due(&self, owner: Uuid) -> bool {
         let Ok(mut requests) = self.snapshot_requests.lock() else {
             return false;

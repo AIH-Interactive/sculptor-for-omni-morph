@@ -64,11 +64,22 @@ impl Policy {
 
     /// Distribution is evaluated as the observer, never with the wearer's grants.
     pub fn can_distribute(self, wearer: Uuid, observer: Uuid, granted: bool) -> bool {
+        self.can_render_equipment(wearer, observer, granted, false)
+    }
+
+    /// This exception belongs to the current source-bound equipment, not catalog access.
+    pub fn can_render_equipment(
+        self,
+        wearer: Uuid,
+        observer: Uuid,
+        granted: bool,
+        show_private_equipment: bool,
+    ) -> bool {
         if self.moderation != Moderation::Active {
             return false;
         }
-        if self.visibility == Visibility::Private && observer != self.uploader {
-            return false;
+        if self.visibility == Visibility::Private {
+            return wearer == self.uploader && (wearer == observer || show_private_equipment);
         }
         self.permissions(Actor {
             uuid: observer,
@@ -146,5 +157,33 @@ mod tests {
         policy.moderation = Moderation::Blocked;
         assert!(!policy.can_distribute(owner, owner, true));
         // Blocked wardrobe copies are separately SELF_ONLY, not library downloads.
+    }
+
+    #[test]
+    fn private_equipment_opt_in_changes_rendering_without_opening_catalog_access() {
+        let owner = Uuid::from_u128(1);
+        let observer = Uuid::from_u128(2);
+        for requires_authorization in [false, true] {
+            let mut policy = Policy {
+                uploader: owner,
+                visibility: Visibility::Private,
+                requires_authorization,
+                moderation: Moderation::Active,
+            };
+            assert!(!policy.can_render_equipment(owner, observer, true, false));
+            assert!(policy.can_render_equipment(owner, observer, false, true));
+            assert!(!policy.can_render_equipment(observer, owner, true, true));
+            assert!(policy.can_render_equipment(owner, owner, false, false));
+            let access = policy.permissions(Actor {
+                uuid: observer,
+                admin_context: false,
+                granted: true,
+            });
+            assert!(!access.visible && !access.use_model);
+            for moderation in [Moderation::Blocked, Moderation::Deleted] {
+                policy.moderation = moderation;
+                assert!(!policy.can_render_equipment(owner, observer, true, true));
+            }
+        }
     }
 }

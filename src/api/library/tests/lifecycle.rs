@@ -1,6 +1,6 @@
 use super::*;
 
-async fn restart(server: &mut Server) {
+pub(super) async fn restart(server: &mut Server) {
     server.task.abort();
     tokio::time::timeout(std::time::Duration::from_secs(2), async {
         while !server.task.is_finished() {
@@ -37,6 +37,20 @@ async fn restart(server: &mut Server) {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let app = router(state.clone())
         .merge(crate::api::protobuf::router(true))
+        .route("/ws", axum::routing::get(crate::api::figura::ws))
+        .route(
+            "/api/:uuid",
+            axum::routing::get(crate::api::figura::profile::user_info),
+        )
+        .route(
+            "/api/:uuid/avatar",
+            axum::routing::get(crate::api::figura::profile::download_avatar),
+        )
+        .route(
+            "/api/avatar",
+            axum::routing::put(crate::api::figura::profile::upload_avatar)
+                .layer(axum::extract::DefaultBodyLimit::max(100 * 1024)),
+        )
         .with_state(state.clone());
     server.base = format!("http://{}", listener.local_addr().unwrap());
     server.task = tokio::spawn(async move {

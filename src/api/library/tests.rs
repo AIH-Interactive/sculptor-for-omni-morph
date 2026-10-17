@@ -10,12 +10,25 @@ use std::sync::Arc;
 use tokio::sync::RwLock;
 
 mod admin;
+mod equipment;
 mod images;
 mod lifecycle;
 mod transfers;
+mod wardrobe;
+mod subscriptions;
 
 static TEST_SERVERS: std::sync::LazyLock<Arc<tokio::sync::Semaphore>> =
     std::sync::LazyLock::new(|| Arc::new(tokio::sync::Semaphore::new(4)));
+
+static LEGACY_DIRECTORY: std::sync::LazyLock<tempfile::TempDir> =
+    std::sync::LazyLock::new(|| {
+        let directory = tempfile::tempdir().unwrap();
+        std::env::set_var(crate::AVATARS_ENV, directory.path());
+        std::env::set_var(crate::ASSETS_ENV, directory.path().join("assets"));
+        lazy_static::initialize(&crate::AVATARS_VAR);
+        lazy_static::initialize(&crate::ASSETS_VAR);
+        directory
+    });
 
 struct Server {
     _permit: tokio::sync::OwnedSemaphorePermit,
@@ -70,6 +83,7 @@ impl Server {
     }
 
     async fn start() -> Self {
+        std::sync::LazyLock::force(&LEGACY_DIRECTORY);
         let permit = TEST_SERVERS.clone().acquire_owned().await.unwrap();
         let directory = tempfile::tempdir().unwrap();
         let storage = Arc::new(Storage::open(directory.path()).unwrap());
@@ -107,6 +121,29 @@ impl Server {
         let base = format!("http://{}", listener.local_addr().unwrap());
         let app = router(state.clone())
             .merge(crate::api::protobuf::router(true))
+            .nest("/api/v1", crate::api::v1::router(100 * 1024))
+            .route(
+                "/internal/:uuid/avatar",
+                axum::routing::put(crate::api::lambda::internal::upload_avatar),
+            )
+            .route(
+                "/internal/:uuid/temp",
+                axum::routing::put(crate::api::lambda::internal::temp_avatar),
+            )
+            .route("/ws", axum::routing::get(crate::api::figura::ws))
+            .route(
+                "/api/:uuid",
+                axum::routing::get(crate::api::figura::profile::user_info),
+            )
+            .route(
+                "/api/:uuid/avatar",
+                axum::routing::get(crate::api::figura::profile::download_avatar),
+            )
+            .route(
+                "/api/avatar",
+                axum::routing::put(crate::api::figura::profile::upload_avatar)
+                    .layer(axum::extract::DefaultBodyLimit::max(100 * 1024)),
+            )
             .with_state(state.clone());
         let task = tokio::spawn(async move {
             axum::serve(listener, app).await.unwrap();

@@ -24,7 +24,7 @@ pub(super) fn open(root: &Path, path: &Path) -> Result<(Connection, Manifest)> {
     let version: u32 = database
         .pragma_query_value(None, "user_version", |row| row.get(0))
         .map_err(sql_error)?;
-    if version > 2 {
+    if version > super::library::SCHEMA_VERSION {
         return Err(ErrorCode::UnsupportedVersion);
     }
     database.execute_batch("PRAGMA foreign_keys = ON; PRAGMA journal_mode = WAL; PRAGMA synchronous = FULL;

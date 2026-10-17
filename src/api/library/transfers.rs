@@ -1,45 +1,12 @@
 use super::*;
 use crate::service::library::transfers::{CompleteInput, TransferInput};
+use crate::service::resource::DownloadPermit;
 use axum::{
     body::{Body, Bytes},
     extract::{Path, State, rejection::JsonRejection},
 };
-use std::{
-    collections::HashMap,
-    sync::{LazyLock, Mutex},
-    time::Duration,
-};
+use std::time::Duration;
 use tokio::io::AsyncReadExt;
-
-static STREAMS: LazyLock<Mutex<HashMap<Uuid, usize>>> =
-    LazyLock::new(|| Mutex::new(HashMap::new()));
-
-struct StreamPermit(Uuid);
-
-impl StreamPermit {
-    fn acquire(player: Uuid) -> std::result::Result<Self, ErrorCode> {
-        let mut streams = STREAMS.lock().map_err(|_| ErrorCode::Internal)?;
-        if streams.values().sum::<usize>() >= 32 || streams.get(&player).copied().unwrap_or(0) >= 2
-        {
-            return Err(ErrorCode::LimitExceeded);
-        }
-        *streams.entry(player).or_default() += 1;
-        Ok(Self(player))
-    }
-}
-
-impl Drop for StreamPermit {
-    fn drop(&mut self) {
-        if let Ok(mut streams) = STREAMS.lock() {
-            if let Some(count) = streams.get_mut(&self.0) {
-                *count = count.saturating_sub(1);
-                if *count == 0 {
-                    streams.remove(&self.0);
-                }
-            }
-        }
-    }
-}
 
 pub async fn create(
     State(state): State<AppState>,
@@ -71,7 +38,7 @@ struct TransferStream {
     id: String,
     file: tokio::fs::File,
     remaining: u64,
-    _permit: StreamPermit,
+    _permit: DownloadPermit,
 }
 
 pub async fn download(
@@ -80,7 +47,7 @@ pub async fn download(
     headers: HeaderMap,
 ) -> Result<Response> {
     let actor = actor(&state, &headers).await?;
-    let permit = StreamPermit::acquire(actor.uuid)?;
+    let permit = DownloadPermit::acquire(actor.uuid)?;
     let storage = state.storage.clone();
     let transfer = id.clone();
     let resource = blocking(move || storage.library_transfer_file(actor, &transfer)).await?;

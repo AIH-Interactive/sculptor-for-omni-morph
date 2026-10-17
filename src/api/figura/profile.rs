@@ -28,7 +28,7 @@ pub async fn user_info(
     State(state): State<AppState>,
     headers: HeaderMap,
 ) -> ApiResult<Json<Value>> {
-    crate::service::session::authenticate(&state, &token)?;
+    let observer = crate::service::session::authenticate(&state, &token)?.uuid;
     tracing::info!("Receiving profile information for {}", uuid);
 
     let formatted_uuid = format_uuid(&uuid);
@@ -42,7 +42,16 @@ pub async fn user_info(
         let last_modified = meta.modified().unwrap();
         SystemTime::now() > last_modified.add(Duration::from_secs(60))
     } else { false };
-    let use_temp = !request_temp_state && request_self_avatar && !outdated;
+    let storage = state.storage.clone();
+    let library_equipped = crate::service::library::work(move || {
+        storage.library_has_equipped_source(uuid)
+    })
+    .await
+    .map_err(crate::service::resource::legacy_error)?;
+    let use_temp = !library_equipped
+        && !request_temp_state
+        && request_self_avatar
+        && !outdated;
     let avatar_file = if use_temp {
         tracing::info!("Profile {} is self requesting and it is temp", uuid);
         state.user_manager.put_request_temp_state(uuid, true);
@@ -108,10 +117,12 @@ pub async fn user_info(
             None
         }
     } else {
-        let equipped = state
-            .storage
-            .equipped(uuid)
-            .map_err(crate::service::resource::legacy_error)?;
+        let storage = state.storage.clone();
+        let equipped = crate::service::library::work(move || {
+            storage.library_project_equipped(uuid, observer)
+        })
+        .await
+        .map_err(crate::service::resource::legacy_error)?;
         let selected = if supports_ysm(&headers) {
             equipped.primary
         } else {
@@ -137,7 +148,7 @@ pub async fn download_avatar(
     let str_uuid = format_uuid(&uuid);
     tracing::info!("Requesting an avatar: {}", str_uuid);
 
-    crate::service::resource::download_legacy(&state, uuid, is_requesting_self(uuid, &state, &token), supports_ysm(&headers)).await
+    crate::service::resource::download_legacy(&state, uuid, &token, supports_ysm(&headers)).await
 }
 
 /// Explicit model capability for the extended Figura adapter; absent in upstream clients.

@@ -111,6 +111,19 @@ fn legacy_frames_are_frozen() {
 
 #[tokio::test]
 async fn legacy_http_baseline() {
+    // The production legacy roots are initialized once per process. Run this
+    // directory-sensitive baseline in its own process so parallel API fixtures
+    // cannot initialize those roots before this test installs its environment.
+    const CHILD: &str = "OMNIMORPH_LEGACY_HTTP_TEST_CHILD";
+    if std::env::var_os(CHILD).is_none() {
+        let result = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", "protocol::tests::legacy_http_baseline", "--nocapture"])
+            .env(CHILD, "1")
+            .status()
+            .unwrap();
+        assert!(result.success(), "isolated legacy HTTP baseline failed");
+        return;
+    }
     use crate::{
         auth::{UManager, Userinfo},
         state::Config,

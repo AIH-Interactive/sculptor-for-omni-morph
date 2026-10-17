@@ -34,7 +34,7 @@ pub async fn initial(
 async fn handle_socket(mut ws: WebSocket, state: AppState, supports_ysm: bool) {
     // Trying authenticate & get user data or dropping connection
     match authenticate(&mut ws, &state).await {
-        Ok(user) => {
+        Ok((user, token)) => {
             // Creating session & creating/getting channels
             let session_id;
             let mut session = {
@@ -54,6 +54,7 @@ async fn handle_socket(mut ws: WebSocket, state: AppState, supports_ysm: bool) {
                 let subs_tx = state.subscribes.publisher(user.uuid);
 
                 WSSession {
+                    token,
                     user: user.clone(),
                     own_tx,
                     own_rx,
@@ -138,6 +139,7 @@ async fn main_worker(
                         }
                     },
                 };
+                check_session(state, session)?;
 
                 // Processing message
                 match external_msg {
@@ -197,7 +199,15 @@ async fn main_worker(
                             }
                             // Creates a channel to send pings to a subscriber if it can't find an existing one
                             let rx = state.subscribes.subscribe(uuid);
-                            let handle = tokio::spawn(sub_worker(session.own_tx.clone(), rx, state.clone(), uuid, supports_ysm.clone())).abort_handle();
+                            let handle = tokio::spawn(sub_worker(
+                                session.own_tx.clone(),
+                                rx,
+                                state.clone(),
+                                uuid,
+                                session.user.uuid,
+                                supports_ysm.clone(),
+                            ))
+                            .abort_handle();
                             session.sub_workers_aborthandles.insert(uuid, handle);
                         }
                     },
@@ -215,7 +225,16 @@ async fn main_worker(
                 let internal_msg = internal_msg.ok_or(anyhow::anyhow!("Unexpected error! Session channel broken!"))?;
                 match internal_msg {
                     SessionMessage::Event(event) => {
-                        forward_event(ws, event, supports_ysm.load(Ordering::Acquire), &mut outbound_message_id).await?;
+                        check_session(state, session)?;
+                        forward_event(
+                            ws,
+                            state,
+                            session.user.uuid,
+                            event,
+                            supports_ysm.load(Ordering::Acquire),
+                            &mut outbound_message_id,
+                        )
+                        .await?;
                     },
                     SessionMessage::Ping(msg) => {
                         ws.send(Message::Binary(msg)).await?
@@ -239,10 +258,15 @@ async fn sub_worker(
     mut rx: broadcast::Receiver<CloudEvent>,
     state: AppState,
     owner: uuid::Uuid,
+    viewer: uuid::Uuid,
     supports_ysm: Arc<AtomicBool>,
 ) {
     let mut baseline = None;
-    if supports_ysm.load(Ordering::Acquire) {
+    if supports_ysm.load(Ordering::Acquire)
+        && crate::service::library::can_observe_model(&state, owner, viewer)
+            .await
+            .unwrap_or(false)
+    {
         if let Ok(snapshot) = state
             .storage
             .ysm_snapshot(owner, crate::storage::now_seconds())
@@ -269,6 +293,17 @@ async fn sub_worker(
                 return;
             }
         };
+        match crate::service::library::event_visible(&state, viewer, &msg).await {
+            Ok(true) => {}
+            Ok(false) => {
+                baseline = None;
+                continue;
+            }
+            Err(_) => {
+                tx_main.close_signal().send_replace(true);
+                return;
+            }
+        }
         match &msg {
             CloudEvent::Ysm { body, .. } => {
                 if !supports_ysm.load(Ordering::Acquire) {
@@ -318,10 +353,19 @@ async fn sub_worker(
 
 async fn forward_event(
     ws: &mut WebSocket,
+    state: &AppState,
+    viewer: uuid::Uuid,
     event: CloudEvent,
     supports_ysm: bool,
     message_id: &mut u64,
 ) -> anyhow::Result<()> {
+    if !crate::service::library::event_visible(state, viewer, &event)
+        .await
+        .map_err(|_| anyhow::anyhow!("Model event authorization failed"))?
+    {
+        return Ok(());
+    }
+    let policy_event = event.clone();
     let packets = match event {
         CloudEvent::Ysm {
             owner,
@@ -355,9 +399,15 @@ async fn forward_event(
     };
     tokio::time::timeout(std::time::Duration::from_secs(5), async {
         for bytes in packets {
+            if !crate::service::library::event_visible(state, viewer, &policy_event)
+                .await
+                .map_err(|_| anyhow::anyhow!("Model event authorization failed"))?
+            {
+                return Ok(());
+            }
             ws.send(Message::Binary(bytes)).await?;
         }
-        Ok::<(), axum::Error>(())
+        Ok::<(), anyhow::Error>(())
     })
     .await
     .map_err(|_| anyhow::anyhow!("slow M7 consumer requires reconnect"))??;
@@ -379,7 +429,19 @@ fn encode_event(event: CloudEvent) -> Option<Vec<u8>> {
     }
 }
 
-async fn authenticate(socket: &mut WebSocket, state: &AppState) -> Result<Userinfo, AuthModeError> {
+fn check_session(state: &AppState, session: &WSSession) -> anyhow::Result<()> {
+    let identity = crate::service::session::authenticate(state, &session.token)
+        .map_err(|_| anyhow::anyhow!("Player session is no longer valid"))?;
+    if identity.uuid != session.user.uuid {
+        bail!("Player session identity changed");
+    }
+    Ok(())
+}
+
+async fn authenticate(
+    socket: &mut WebSocket,
+    state: &AppState,
+) -> Result<(Userinfo, String), AuthModeError> {
     match socket.recv_and_decode().await {
         Ok(msg) => {
             match msg {
@@ -391,7 +453,7 @@ async fn authenticate(socket: &mut WebSocket, state: &AppState) -> Result<Userin
                             if socket.send(Message::Binary(S2CMessage::Auth.into())).await.is_err() {
                                 Err(AuthModeError::SendError)
                             } else if !user.banned {
-                                Ok(user.clone())
+                                Ok((user, token))
                             } else {
                                 let _ = ban_action(socket).await
                                     .inspect_err(

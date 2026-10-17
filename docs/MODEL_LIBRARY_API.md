@@ -5,10 +5,11 @@ sections 1, 3–7 is normative; this document resolves its implementation choice
 This extends Sculptor, never the separate `spm-cloud` service. No protocol v1
 field numbers, release hashes, application versions, or wardrobe UI change.
 
-M1 implementation update: independent schema v2, shared manifest transaction
-hook, policy decisions, durable blocked identities and admin credential/session
-primitives are implemented. HTTP routes remain M2 work. No library feature is
-advertised to clients yet; M3 distribution enforcement remains a later stage.
+M3 implementation update: source equipment, observer policy enforcement and
+legacy wardrobe hash restrictions are implemented. The local schema is v3 and
+`capabilities.enabled` is true after the automated distribution checks below.
+Client library service and UI remain M4–M6 work; real-game acceptance is
+MANUAL/PENDING. Frozen Protobuf v1 field numbers remain unchanged.
 
 ## Identity and request envelope
 
@@ -387,3 +388,88 @@ revocation, administrator configuration removal/restoration, token retries,
 refresh-family revocation, login limits and stable error responses. Synthetic
 encrypted vectors prove parser behavior only. Real deployments, password entry
 and Minecraft GUI/rendering remain `MANUAL/PENDING` for the planned later stages.
+
+## M3 implementation and deployment checkpoint
+
+The source-equipment route and distribution closure are implemented and
+capabilities are enabled. `POST models/{id}/equip` accepts
+the documented operation/model/equipment revisions and defaults
+`show_private_equipment` to false. Its response contains `model_id`,
+`model_revision`, `equipment_revision`, `owner`, `asset_id`, `asset_revision`
+and `show_private_equipment`. The alias reuses immutable package bytes and
+persists its source binding, setting and equipment selection atomically.
+Operation replay does not equip again; conflicting equipment revisions fail.
+
+The local schema advances to v3 with `library_equipment_settings`, keyed by the
+source-bound equipment reference. Existing bindings without a settings row are
+closed by default. Upgrading v1/v2 creates a consistent pre-upgrade backup and
+commits DDL/version together. Rollback requires restoring that snapshot; do not
+lower user_version on a database containing the new table.
+It also includes `library_verified_blobs`, indexed by immutable raw identity and
+server-verified NBT/ciphertext/legacy identities. New resource commits record
+these in the publication transaction. Historical blobs are boundedly scanned
+once before observer access; client-declared content hashes are never accepted
+as proof. Matching a blocked NBT identity denies repacked wardrobe copies
+despite different compressed hashes, accounts or asset names.
+
+Protobuf and Figura profile projections evaluate the observer independently,
+including the Figura compatibility slot. A private render opt-in admits only
+the uploader's currently equipped alias; catalog access stays private. Closing
+the option or changing equipment denies subsequent alias reads. Revoking the
+wearer's use permission also denies alias distribution even if an observer
+still has a grant. The wearer's existing local selection is retained.
+
+Explicit user amendment: BLOCKED models forced private cannot be opted into
+external rendering. Existing true settings do not bypass moderation, and the
+equipment transaction rejects attempts to enable them, including an uploader
+acting with administrator context. The client control must be disabled in M6.
+Blocked hash SELF_ONLY distribution remains mandatory across wardrobe copies.
+
+Eight equipment/stream tests pass, including double-protocol profiles, private
+intent changes, restart/replay, concurrent CAS, SQL-trigger rollback and block/
+grant revocation, stale temporary slots and deterministic midstream denial.
+Figura legacy downloads and Protobuf resource streams now share a 32-global /
+two-per-player admission limit and recheck sessions/source access per 32 KiB
+chunk, with bounded file reads. A real wardrobe-upload test covers repacking,
+later moderation, post-ban uploads by another account, self access, guessed
+Protobuf paths and an unaffected package. Full regression currently passes
+75 tests (one saturation test runs in a separate batch). The legacy HTTP
+baseline runs in a fresh child process because its process-global root cache
+cannot share environment setup with parallel fixtures; no production behavior
+was changed for test isolation.
+
+Existing catalog copies now share an effective policy view for active verified
+hash bans. Their persisted visibility stays PRIVATE across block/unblock, and
+policy revisions advance together. A real admin API test verifies ordinary
+list/count/detail hiding, admin BLOCKED discovery and transfer/equip rejection.
+
+Both WebSocket adapters now recheck observer permissions before recovery and at
+the send boundary. Active observers receive policy refresh/removal projections;
+the wearer's local selection is retained. YSM state also matches the current
+model and publisher generation; legacy fragments recheck at send checkpoints.
+The legacy connection keeps its presented credential in connection memory and
+revalidates it, rather than relying on an optional persisted profile field.
+Three real WS tests cover private opt-in/removal, script ping filtering,
+encrypted-source snapshot/resume/queued-state denial, the uploader/granted/
+ungranted/configured-admin profile matrix and revocation of an observer grant.
+Admin configuration does not grant observers the right to render model bytes.
+
+The encrypted old-entry test changes the NBT wrapper while keeping the encrypted
+source unchanged. It verifies lazy indexing of a historical internal upload,
+post-ban v1 uploads and a self-only one-shot internal temporary upload. The
+Windows staging flush uses a writable handle as required by FlushFileBuffers.
+The existing internal Host/admin-token authority is unchanged by this milestone.
+
+The client now exposes begin/current/publish guards for formal library equipment.
+The request retires pending anonymous broadcasts and model preparation while
+preserving the visible model on failure. Only a confirmed equip completion on
+the current connection/selection reloads the source alias through profile and
+download; it never uploads another `avatar` asset. Publication runs on the client
+thread. The normal profile path refreshes Protobuf's equipment identity before
+YSM publication. M4 owns the actual library HTTP client that uses this seam.
+
+Final automated checks: cargo build, 75 regular Rust tests and one separate
+worker-saturation test pass. Fabric compileJava, avatarCloudRefreshSmokeTest and
+cloudAdapterSmokeTest pass. Logs are captured in build.log and copied to TEMP
+as omnimorph-m3-{build,final-all,saturation,client}.log. Real deployment rollback
+and visual/in-game acceptance remain MANUAL/PENDING, not equivalent to a PASS.

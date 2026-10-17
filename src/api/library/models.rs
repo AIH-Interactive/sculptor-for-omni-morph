@@ -3,11 +3,37 @@ use crate::service::library::{ListQuery, Mutation, OperationInput};
 use axum::extract::{Path, Query, State, rejection::JsonRejection};
 use serde::Deserialize;
 
+pub async fn equip(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    headers: HeaderMap,
+    body: std::result::Result<Json<crate::storage::library_equipment::LibraryEquip>, JsonRejection>,
+) -> Result<Response> {
+    let actor = actor(&state, &headers).await?;
+    let input = parse_json(body)?;
+    let storage = state.storage.clone();
+    let model_revision = input.model_revision;
+    let show_private_equipment = input.show_private_equipment;
+    let model_id = id.clone();
+    let result = blocking(move || storage.library_equip(actor, &model_id, &input)).await?;
+    crate::service::equipment::changed(&state, actor.uuid).await;
+    let primary = result.primary.as_ref().ok_or(ErrorCode::Internal)?;
+    json_response(json!({
+        "model_id": id,
+        "model_revision": model_revision,
+        "equipment_revision": result.revision,
+        "owner": primary.owner,
+        "asset_id": primary.asset_id,
+        "asset_revision": primary.revision,
+        "show_private_equipment": show_private_equipment,
+    }))
+}
+
 pub async fn capabilities(State(state): State<AppState>, headers: HeaderMap) -> Result<Response> {
     player(&state, &headers)?;
     let config = state.config.read().await;
     json_response(
-        json!({"enabled": false, "version": 1, "max_upload_bytes": config.model_library.max_upload_bytes,
+        json!({"enabled": true, "version": 1, "max_upload_bytes": config.model_library.max_upload_bytes,
         "formats": ["zip", "ysm"], "model_types": ["FIGURA", "YSM_PLAIN", "YSM_ENCRYPTED"],
         "max_page_size": 8, "max_image_bytes": 2097152, "max_image_width": 2048, "max_image_height": 2048,
         "categories": config.model_library.categories, "admin_login_available": !config.model_library.admins.is_empty()}),
@@ -53,9 +79,13 @@ pub async fn patch(
     let actor = actor(&state, &headers).await?;
     let input = parse_json(body)?;
     let categories = state.config.read().await.model_library.categories.clone();
-    json_response(
-        blocking(move || state.storage.library_patch(actor, &id, &input, &categories)).await?,
-    )
+    let affects_distribution = input.visibility.is_some() || input.requires_authorization.is_some();
+    let storage = state.storage.clone();
+    let result = blocking(move || storage.library_patch(actor, &id, &input, &categories)).await?;
+    if affects_distribution {
+        state.subscribes.invalidate_observers();
+    }
+    json_response(result)
 }
 
 pub async fn delete(
@@ -66,7 +96,10 @@ pub async fn delete(
 ) -> Result<Response> {
     let actor = actor(&state, &headers).await?;
     let input = parse_json(body)?;
-    json_response(blocking(move || state.storage.library_delete(actor, &id, &input)).await?)
+    let storage = state.storage.clone();
+    let result = blocking(move || storage.library_delete(actor, &id, &input)).await?;
+    state.subscribes.invalidate_observers();
+    json_response(result)
 }
 
 async fn change_favorite(
@@ -131,14 +164,11 @@ async fn change_grant(
 ) -> Result<Response> {
     let actor = actor(&state, &headers).await?;
     let input = parse_json(body)?;
-    json_response(
-        blocking(move || {
-            state
-                .storage
-                .library_grant(actor, &id, player, &input, enabled)
-        })
-        .await?,
-    )
+    let storage = state.storage.clone();
+    let result =
+        blocking(move || storage.library_grant(actor, &id, player, &input, enabled)).await?;
+    state.subscribes.invalidate_observers();
+    json_response(result)
 }
 
 pub async fn grant(
@@ -191,7 +221,10 @@ async fn change_block(
 ) -> Result<Response> {
     let actor = actor(&state, &headers).await?;
     let input = parse_json(body)?;
-    json_response(blocking(move || state.storage.library_block(actor, &id, &input, blocked)).await?)
+    let storage = state.storage.clone();
+    let result = blocking(move || storage.library_block(actor, &id, &input, blocked)).await?;
+    state.subscribes.invalidate_observers();
+    json_response(result)
 }
 
 pub async fn block(

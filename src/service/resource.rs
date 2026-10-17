@@ -9,6 +9,9 @@ use std::{collections::HashMap, sync::Mutex};
 use tokio::fs;
 use uuid::Uuid;
 
+mod downloads;
+pub(crate) use downloads::{guarded_body, DownloadPermit};
+
 struct PendingUpload {
     request: UploadRequest,
     fingerprint: Vec<u8>,
@@ -498,6 +501,7 @@ async fn commit_upload_inner(
             descriptor,
             max_assets,
             |transaction, descriptor| {
+                super::library::record_identity(transaction, descriptor, &inspected)?;
                 if let Some(context) = context {
                     context.publish(transaction, descriptor, &inspected)?;
                 }
@@ -716,7 +720,10 @@ pub async fn write_legacy(
         .await
         .map_err(|_| ApiError::Internal)?
         .map_err(legacy_error)?;
-    fs::File::open(&staging.0)
+    // Windows FlushFileBuffers requires a writable handle for this staged upload.
+    fs::OpenOptions::new()
+        .write(true)
+        .open(&staging.0)
         .await
         .map_err(internal_and_log)?
         .sync_all()
@@ -776,14 +783,18 @@ async fn raw_file_hash(path: &std::path::Path) -> Result<Vec<u8>, ErrorCode> {
 pub async fn download_legacy(
     state: &AppState,
     owner: Uuid,
-    requesting_self: bool,
+    token: &str,
     supports_ysm: bool,
 ) -> ApiResult<axum::response::Response> {
     use axum::response::IntoResponse;
-    use tokio::io::AsyncReadExt;
+    let viewer = super::session::authenticate(state, token)?.uuid;
+    let storage = state.storage.clone();
+    let library_equipped = super::library::work(move || storage.library_has_equipped_source(owner))
+        .await
+        .map_err(legacy_error)?;
     let temporary_path = legacy_read_path(owner, true);
-    let temporary = requesting_self && temporary_path.exists();
-    let path = if temporary {
+    let temporary = !library_equipped && viewer == owner && temporary_path.exists();
+    let (path, resource) = if temporary {
         if !supports_ysm {
             let path = temporary_path.clone();
             let identity = tokio::task::spawn_blocking(move || super::package::inspect(&path))
@@ -794,36 +805,60 @@ pub async fn download_legacy(
                 return Err(ApiError::NotFound);
             }
         }
-        temporary_path
+        (temporary_path, None)
     } else {
         ensure_legacy_import(state, owner, false)
             .await
             .map_err(legacy_error)?;
-        let equipped = state.storage.equipped(owner).map_err(legacy_error)?;
-        let avatar = if supports_ysm {
-            equipped.primary
-        } else {
-            equipped.figura_compatibility
-        }
-        .ok_or(ApiError::NotFound)?;
-        state
-            .storage
-            .blob_path(&avatar.raw_sha256)
-            .map_err(legacy_error)?
+        let storage = state.storage.clone();
+        super::library::work(move || {
+            let equipped = storage.library_project_equipped(owner, viewer)?;
+            let avatar = if supports_ysm {
+                equipped.primary
+            } else {
+                equipped.figura_compatibility
+            }
+            .ok_or(ErrorCode::NotFound)?;
+            storage.library_resource_access(
+                owner,
+                &avatar.asset_id,
+                avatar.revision,
+                super::library_policy::Actor {
+                    uuid: viewer,
+                    admin_context: false,
+                    granted: false,
+                },
+            )?;
+            let path = storage.blob_path(&avatar.raw_sha256)?;
+            Ok((path, Some(avatar)))
+        })
+        .await
+        .map_err(legacy_error)?
     };
     let file = fs::File::open(&path)
         .await
         .map_err(|_| ApiError::NotFound)?;
     let length = file.metadata().await.map_err(internal_and_log)?.len();
+    if resource.as_ref().is_some_and(|avatar| avatar.raw_length != length) {
+        return Err(ApiError::Internal);
+    }
+    let token = token.to_owned();
+    let body = guarded_body(state.clone(), file, length, resource, viewer, move |state| {
+        super::session::authenticate(state, &token)
+            .map(|user| user.uuid)
+            .map_err(|_| ErrorCode::Unauthenticated)
+    })
+    .map_err(legacy_error)?;
     if temporary {
-        // Windows permits deleting an open Tokio file; the handle serves this one-shot body.
+        // Admit the stream before consuming the one-shot file. Windows allows
+        // deleting this shared file while its response body holds the handle.
         fs::remove_file(&path).await.map_err(internal_and_log)?;
     }
-    let body = axum::body::Body::from_stream(tokio_util::io::ReaderStream::new(file.take(length)));
     Ok((
         [
             ("content-type", "application/octet-stream"),
             ("content-length", &length.to_string()),
+            ("cache-control", "private, no-store"),
         ],
         body,
     )

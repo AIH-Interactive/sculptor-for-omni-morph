@@ -107,7 +107,7 @@ fn new_layout_imports_old_manifest_and_does_not_clean_unknown_schema_uploads() {
     drop(storage);
     assert_eq!(fs::read(old.join("manifest.json")).unwrap(), original);
     let connection = rusqlite::Connection::open(database).unwrap();
-    connection.pragma_update(None, "user_version", 3).unwrap();
+    connection.pragma_update(None, "user_version", 4).unwrap();
     let pending = avatars.join("upload/future.part");
     fs::write(&pending, b"keep").unwrap();
     assert_eq!(

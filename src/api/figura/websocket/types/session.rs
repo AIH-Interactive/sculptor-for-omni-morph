@@ -2,6 +2,7 @@ use dashmap::DashMap;
 use tokio::{sync::broadcast, task::AbortHandle};
 
 pub struct WSSession {
+    pub token: String,
     pub user: crate::auth::Userinfo,
     pub own_tx: crate::service::queue::Sender,
     pub own_rx: crate::service::queue::Receiver,

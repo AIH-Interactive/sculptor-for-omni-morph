@@ -4,7 +4,7 @@ use std::sync::LazyLock;
 static ADMIN_TESTS: LazyLock<tokio::sync::Mutex<()>> =
     LazyLock::new(|| tokio::sync::Mutex::new(()));
 
-async fn configure(server: &Server) {
+pub(super) async fn configure(server: &Server) {
     // Independently derived, synthetic M1 password vector; never a deployment credential.
     let config: crate::service::library_admin::LibraryConfig = toml::from_str(&format!(
         "[[admins]]\nplayer_name = \"Player4\"\nuuid = \"{}\"\npassword_hash = \"pbkdf2-sha256$v1$600000$000102030405060708090a0b0c0d0e0f$055bcd61a2939b3846e10d4f9ebdf02be6610f5f894fd7882e985b9f87b81cff\"",
@@ -281,4 +281,129 @@ async fn block_hides_from_uploader_and_unblock_keeps_private_with_persistent_has
         .unwrap();
     assert_eq!(detail["visibility"], "PRIVATE");
     assert_eq!(detail["moderation_status"], "ACTIVE");
+}
+
+#[tokio::test]
+async fn a_hash_ban_hides_existing_catalog_copies_and_revokes_their_transfers() {
+    let _serial = ADMIN_TESTS.lock().await;
+    let server = Server::start().await;
+    configure(&server).await;
+    let (original, _) = server.upload_model("PUBLIC").await;
+    let (copy, _) = server.upload_model("PUBLIC").await;
+    let copy_path = format!("/api/library/v1/models/{copy}");
+    assert_eq!(
+        server
+            .request(Method::PUT, &format!("{copy_path}/favorite"), 3)
+            .json(&json!({"operation_id": library::random_id()}))
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        200
+    );
+    let response = server.request(Method::POST, &format!("{copy_path}/transfers"), 3)
+        .json(&json!({"operation_id": library::random_id(), "purpose": "preview", "model_revision": 1}))
+        .send().await.unwrap();
+    assert_eq!(response.status(), 200);
+    let transfer = response.json::<Value>().await.unwrap();
+    let credentials = login(&server, &library::random_id()).await;
+    let token = credentials["access_token"].as_str().unwrap();
+    let moderation = format!("/api/library/v1/admin/models/{original}/block");
+    assert_eq!(
+        request(&server, Method::PUT, &moderation)
+            .header("x-omnimorph-admin", token)
+            .json(&json!({"operation_id": library::random_id(), "expected_revision": 2}))
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        200
+    );
+    for player in [1, 3] {
+        assert_eq!(
+            server
+                .request(Method::GET, &copy_path, player)
+                .send()
+                .await
+                .unwrap()
+                .status(),
+            404
+        );
+    }
+    for (scope, player) in [("mine", 1), ("favorites", 3), ("public", 3)] {
+        let response = server
+            .request(
+                Method::GET,
+                &format!("/api/library/v1/models?scope={scope}"),
+                player,
+            )
+            .send()
+            .await
+            .unwrap()
+            .json::<Value>()
+            .await
+            .unwrap();
+        assert_eq!(response["total"], 0);
+    }
+    let blocked = request(
+        &server,
+        Method::GET,
+        "/api/library/v1/models?scope=admin&status=BLOCKED",
+    )
+    .header("x-omnimorph-admin", token)
+    .send()
+    .await
+    .unwrap()
+    .json::<Value>()
+    .await
+    .unwrap();
+    assert_eq!(blocked["total"], 2);
+    assert_eq!(
+        server
+            .request(Method::GET, transfer["relative_path"].as_str().unwrap(), 3)
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        404
+    );
+    assert_eq!(server.request(Method::POST, &format!("{copy_path}/transfers"), 3)
+        .json(&json!({"operation_id": library::random_id(), "purpose": "download", "model_revision": 1}))
+        .send().await.unwrap().status(), 404);
+    assert_eq!(server.request(Method::POST, &format!("{copy_path}/equip"), 1)
+        .json(&json!({"operation_id": library::random_id(), "model_revision": 1, "expected_equipment_revision": 0}))
+        .send().await.unwrap().status(), 404);
+    assert_eq!(server.request(Method::PATCH, &copy_path, 1)
+        .json(&json!({"operation_id": library::random_id(), "expected_revision": 3, "visibility": "PUBLIC"}))
+        .send().await.unwrap().status(), 404);
+    assert_eq!(
+        request(&server, Method::DELETE, &moderation)
+            .header("x-omnimorph-admin", token)
+            .json(&json!({"operation_id": library::random_id(), "expected_revision": 3}))
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        200
+    );
+    let detail = server
+        .request(Method::GET, &copy_path, 1)
+        .send()
+        .await
+        .unwrap()
+        .json::<Value>()
+        .await
+        .unwrap();
+    assert_eq!(detail["moderation_status"], "ACTIVE");
+    assert_eq!(detail["visibility"], "PRIVATE");
+    assert_eq!(detail["policy_revision"], 4);
+    assert_eq!(
+        server
+            .request(Method::GET, &copy_path, 3)
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        404
+    );
 }

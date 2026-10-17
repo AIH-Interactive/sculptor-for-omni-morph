@@ -25,12 +25,16 @@ fn enqueue_with_deadline(
         .map_err(|_| ErrorCode::SnapshotRequired)
 }
 
-fn recover(
+async fn recover(
     state: &AppState,
     sender: &Sender,
     owner: Uuid,
+    viewer: Uuid,
     cursor: Option<&Resume>,
 ) -> Result<Option<YsmIdentity>, ErrorCode> {
+    if !crate::service::library::can_observe_model(state, owner, viewer).await? {
+        return Ok(None);
+    }
     let now = crate::storage::now_seconds();
     if let Some(cursor) = cursor {
         match state
@@ -86,6 +90,7 @@ fn recover(
 pub fn spawn(
     state: AppState,
     owner: Uuid,
+    viewer: Uuid,
     cursor: Option<Resume>,
     sender: Sender,
     supports_ysm: bool,
@@ -96,7 +101,7 @@ pub fn spawn(
     tokio::spawn(async move {
         let result: Result<(), ErrorCode> = async {
             let mut baseline = if supports_ysm {
-                recover(&state, &sender, owner, cursor.as_ref())?
+                recover(&state, &sender, owner, viewer, cursor.as_ref()).await?
             } else {
                 None
             };
@@ -105,13 +110,26 @@ pub fn spawn(
                     .recv()
                     .await
                     .map_err(|_| ErrorCode::SnapshotRequired)?;
+                if !crate::service::library::event_visible(&state, viewer, &event).await? {
+                    baseline = None;
+                    continue;
+                }
                 match &event {
                     CloudEvent::Ysm { body, .. } => {
                         if !supports_ysm || !ysm::advance_cursor(&mut baseline, body)? {
                             continue;
                         }
                     }
-                    CloudEvent::AvatarChanged { .. } => baseline = None,
+                    CloudEvent::AvatarChanged { .. } => {
+                        baseline = None;
+                        sender
+                            .try_send(SessionMessage::Event(event.clone()))
+                            .map_err(|_| ErrorCode::SnapshotRequired)?;
+                        if supports_ysm {
+                            baseline = recover(&state, &sender, owner, viewer, None).await?;
+                        }
+                        continue;
+                    }
                     _ => {}
                 }
                 sender

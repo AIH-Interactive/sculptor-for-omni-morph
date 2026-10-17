@@ -122,11 +122,17 @@ pub async fn dispatch(
                 .user_manager
                 .upload_state(owner, config.limitations.can_upload);
             drop(config);
+            let storage = state.storage.clone();
+            let observer = scope.owner;
+            let equipped = crate::service::library::work(move || {
+                storage.library_project_equipped(owner, observer)
+            })
+            .await?;
             Ok(Body::Profile(Profile {
                 owner: owner.to_string(),
                 rank: user.rank,
                 badges: Some(badges),
-                equipped: Some(state.storage.equipped(owner)?),
+                equipped: Some(equipped),
                 client_version: user.version,
                 last_used: chrono::DateTime::parse_from_rfc3339(&user.last_used)
                     .map(|time| time.timestamp().max(0) as u64)
@@ -267,6 +273,9 @@ pub async fn dispatch(
         }
         Body::SnapshotRequest(request) => {
             let owner = crate::service::ysm::player_owner(&request.owner)?;
+            if !crate::service::library::can_observe_model(state, owner, scope.owner).await? {
+                return Err(ErrorCode::NotFound);
+            }
             match state
                 .storage
                 .ysm_snapshot(owner, crate::storage::now_seconds())

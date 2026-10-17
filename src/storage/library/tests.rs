@@ -80,6 +80,117 @@ fn count(storage: &Storage, table: &str) -> i64 {
 }
 
 #[test]
+fn version_two_equipment_settings_default_closed_and_survive_restart() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("metadata.sqlite3");
+    let storage = Storage::open(directory.path()).unwrap();
+    seed(&storage, "model");
+    drop(storage);
+    let database = Connection::open(&path).unwrap();
+    database
+        .execute_batch("DROP VIEW library_effective_models; DROP VIEW library_hash_blocked_models; DROP TABLE library_equipment_settings; DROP TABLE library_verified_blobs; PRAGMA user_version = 2;")
+        .unwrap();
+    drop(database);
+
+    let storage = Storage::open(directory.path()).unwrap();
+    assert_eq!(count(&storage, "library_models"), 1);
+    storage
+        .library_transaction(|transaction| {
+            transaction.execute(
+            "INSERT INTO library_resource_bindings VALUES ('uploader', 'avatar', 1, 'model', 1)",
+            [],
+        ).map_err(sql_error)?;
+            transaction
+                .execute(
+                    "INSERT INTO library_equipment_settings(resource_owner, asset_id, revision)
+             VALUES ('uploader', 'avatar', 1)",
+                    [],
+                )
+                .map_err(sql_error)?;
+            let show: bool = transaction
+                .query_row(
+                    "SELECT show_private_equipment FROM library_equipment_settings",
+                    [],
+                    |row| row.get(0),
+                )
+                .map_err(sql_error)?;
+            assert!(!show);
+            transaction
+                .execute(
+                    "UPDATE library_equipment_settings SET show_private_equipment = 1",
+                    [],
+                )
+                .map_err(sql_error)?;
+            assert!(
+                transaction
+                    .execute(
+                        "UPDATE library_equipment_settings SET show_private_equipment = 2",
+                        [],
+                    )
+                    .is_err()
+            );
+            Ok(())
+        })
+        .unwrap();
+    storage.transaction(|_| Ok(())).unwrap();
+    drop(storage);
+    let storage = Storage::open(directory.path()).unwrap();
+    let show: bool = storage
+        .library_read(|database| {
+            database
+                .query_row(
+                    "SELECT show_private_equipment FROM library_equipment_settings",
+                    [],
+                    |row| row.get(0),
+                )
+                .map_err(sql_error)
+        })
+        .unwrap();
+    assert!(show);
+
+    let backup = std::fs::read_dir(directory.path())
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .find(|path| path.to_string_lossy().contains("pre-library-"))
+        .unwrap();
+    let backup = Connection::open(backup).unwrap();
+    let version: u32 = backup
+        .pragma_query_value(None, "user_version", |row| row.get(0))
+        .unwrap();
+    assert_eq!(version, 2);
+    let models: i64 = backup
+        .query_row("SELECT count(*) FROM library_models", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(models, 1);
+
+    let failed_path = directory.path().join("failed-v2.sqlite3");
+    let mut failed = Connection::open(&failed_path).unwrap();
+    failed
+        .execute_batch(
+            "PRAGMA user_version = 2; CREATE TABLE library_equipment_settings(retained TEXT);
+         INSERT INTO library_equipment_settings VALUES ('unchanged');",
+        )
+        .unwrap();
+    assert!(migrate(&mut failed, &failed_path, 2).is_err());
+    assert_eq!(
+        failed
+            .pragma_query_value(None, "user_version", |row| row.get::<_, u32>(0))
+            .unwrap(),
+        2
+    );
+    assert_eq!(
+        failed
+            .query_row(
+                "SELECT retained FROM library_equipment_settings",
+                [],
+                |row| row.get::<_, String>(0)
+            )
+            .unwrap(),
+        "unchanged"
+    );
+}
+
+#[test]
 fn version_one_backup_and_failed_ddl_are_recoverable() {
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path().join("metadata.sqlite3");
@@ -89,7 +200,7 @@ fn version_one_backup_and_failed_ddl_are_recoverable() {
     let version: u32 = database
         .pragma_query_value(None, "user_version", |row| row.get(0))
         .unwrap();
-    assert_eq!(version, 2);
+    assert_eq!(version, SCHEMA_VERSION);
     let backup = std::fs::read_dir(directory.path())
         .unwrap()
         .map(|entry| entry.unwrap().path())
@@ -142,10 +253,10 @@ fn block_hashes_persist_through_delete_and_only_explicit_unblock_releases_them()
     seed(&storage, "one");
     seed(&storage, "two");
     let actor = Uuid::from_u128(4);
-    for model in ["one", "two"] {
+    for (model, expected) in [("one", 1), ("two", 2)] {
         storage
             .library_transaction(|transaction| {
-                set_blocked(transaction, model, actor, 1, true, "synthetic reason", 2)
+                set_blocked(transaction, model, actor, expected, true, "synthetic reason", 2)
             })
             .unwrap();
     }
@@ -169,13 +280,13 @@ fn block_hashes_persist_through_delete_and_only_explicit_unblock_releases_them()
         .library_transaction(|transaction| set_blocked(transaction, "one", actor, 1, false, "", 3));
     assert_eq!(conflict, Err(ErrorCode::Conflict));
     storage
-        .library_transaction(|transaction| set_blocked(transaction, "one", actor, 2, false, "", 3))
+        .library_transaction(|transaction| set_blocked(transaction, "one", actor, 3, false, "", 3))
         .unwrap();
     assert!(storage
         .library_hash_blocked("RAW_SHA256", &"a".repeat(64))
         .unwrap());
     storage
-        .library_transaction(|transaction| set_blocked(transaction, "two", actor, 2, false, "", 3))
+        .library_transaction(|transaction| set_blocked(transaction, "two", actor, 4, false, "", 3))
         .unwrap();
     assert!(!storage
         .library_hash_blocked("RAW_SHA256", &"a".repeat(64))

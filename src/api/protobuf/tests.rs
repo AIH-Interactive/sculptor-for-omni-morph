@@ -181,7 +181,11 @@ async fn old_send(socket: &mut Socket, message: C2SMessage) {
 }
 
 fn error(body: envelope::Body, expected: ErrorCode) {
-    assert!(matches!(body, envelope::Body::Error(error) if error.code == expected as i32));
+    let actual = match body {
+        envelope::Body::Error(error) => Some(error.code),
+        _ => None,
+    };
+    assert_eq!(actual, Some(expected as i32), "unexpected protocol error code");
 }
 
 pub async fn integration(base: &str, http: &reqwest::Client, state: &AppState, raw: &[u8]) {

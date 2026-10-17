@@ -302,6 +302,10 @@ impl CommitContext {
                 if let Some(ciphertext) = &inspected.ciphertext_sha256 {
                     identities.push(("YSM_CIPHERTEXT_SHA256", ciphertext.clone()));
                 }
+                transaction.execute(
+                    "INSERT OR IGNORE INTO library_revision_hashes VALUES (?1, 1, 'LEGACY_FIGURA_BASE64_SHA256', ?2)",
+                    params![id, descriptor.legacy_figura_hash],
+                ).map_err(sql_error)?;
                 for (kind, hash) in &identities {
                     transaction
                         .execute(
@@ -351,15 +355,13 @@ impl Storage {
         revision: u64,
         actor: Actor,
     ) -> Result<()> {
+        match self.avatar(owner, asset, revision) {
+            Ok(avatar) => self.library_ensure_verified_blob(&avatar)?,
+            Err(ErrorCode::NotFound) => {}
+            Err(error) => return Err(error),
+        }
         self.library_read(|database| {
-            let source: Option<String> = database.query_row(
-                "SELECT source_model_id FROM library_resource_bindings WHERE resource_owner = ?1 AND asset_id = ?2 AND revision = ?3",
-                params![owner.to_string(), asset, library::sql_integer(revision)?], |row| row.get(0),
-            ).optional().map_err(sql_error)?;
-            if let Some(source) = source {
-                require_action(&model(database, &source, actor, false)?, "download")?;
-            }
-            Ok(())
+            super::distribution::resource_access(database, owner, asset, revision, actor)
         })
     }
 }

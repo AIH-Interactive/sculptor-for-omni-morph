@@ -4,8 +4,7 @@ use axum::{
     body::Body,
     extract::{Path, State},
 };
-use tokio::{fs, io::AsyncReadExt};
-use tokio_util::io::ReaderStream;
+use tokio::fs;
 use uuid::Uuid;
 
 pub async fn upload(
@@ -85,9 +84,21 @@ pub async fn download(
         {
             return Err(ErrorCode::Internal);
         }
-        let mut response = Response::new(Body::from_stream(ReaderStream::new(
-            file.take(avatar.raw_length),
-        )));
+        let session = scope.id.clone();
+        let epoch = scope.epoch;
+        let body = resource::guarded_body(
+            state.clone(),
+            file,
+            avatar.raw_length,
+            Some(avatar.clone()),
+            scope.owner,
+            move |state| {
+                state.protocol_sessions
+                    .authorize(state, &session, epoch)
+                    .map(|session| session.owner)
+            },
+        )?;
+        let mut response = Response::new(body);
         response
             .headers_mut()
             .insert("content-type", "application/octet-stream".parse().unwrap());
@@ -99,6 +110,9 @@ pub async fn download(
                 .parse()
                 .map_err(|_| ErrorCode::Internal)?,
         );
+        response
+            .headers_mut()
+            .insert("cache-control", "private, no-store".parse().unwrap());
         Ok::<_, ErrorCode>(response)
     }
     .await;

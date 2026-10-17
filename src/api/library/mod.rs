@@ -241,6 +241,7 @@ pub(crate) async fn actor_identity(state: &AppState, headers: &HeaderMap) -> Res
 
 pub fn router(state: AppState) -> Router<AppState> {
     Router::new()
+        .route("/api/library/v1/models/:id/equip", post(models::equip))
         .route(
             "/api/library/v1/models/:id/transfers",
             post(transfers::create),

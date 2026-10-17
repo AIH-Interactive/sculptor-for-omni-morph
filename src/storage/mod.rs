@@ -11,6 +11,7 @@ use uuid::Uuid;
 
 mod sqlite;
 pub mod library;
+pub(crate) mod library_equipment;
 mod layout;
 #[cfg(test)]
 mod tests;

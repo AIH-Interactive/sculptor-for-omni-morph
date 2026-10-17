@@ -1,18 +1,23 @@
 //! Durable library data, independent of the legacy manifest's rewritten rows.
-use super::{sqlite::sql_error, ErrorCode, Result, Storage};
-use rusqlite::{params, Connection, OptionalExtension, Transaction};
+use super::{ErrorCode, Result, Storage, sqlite::sql_error};
+use rusqlite::{Connection, OptionalExtension, Transaction, params};
 use std::path::Path;
 use uuid::Uuid;
+
+pub(super) const SCHEMA_VERSION: u32 = 3;
 
 pub(crate) fn sql_integer(value: u64) -> Result<i64> {
     i64::try_from(value).map_err(|_| ErrorCode::InvalidMessage)
 }
 
 pub(super) fn migrate(database: &mut Connection, path: &Path, version: u32) -> Result<()> {
-    if version == 2 {
+    if version > SCHEMA_VERSION {
+        return Err(ErrorCode::UnsupportedVersion);
+    }
+    if version == SCHEMA_VERSION {
         return Ok(());
     }
-    if version == 1 {
+    if version > 0 {
         // Unique backup names preserve the first usable pre-upgrade snapshot on retry.
         let backup = path.with_extension(format!(
             "pre-library-{}.sqlite3",
@@ -21,11 +26,16 @@ pub(super) fn migrate(database: &mut Connection, path: &Path, version: u32) -> R
         database.backup("main", &backup, None).map_err(sql_error)?;
     }
     let transaction = database.transaction().map_err(sql_error)?;
+    if version < 2 {
+        transaction
+            .execute_batch(include_str!("library.sql"))
+            .map_err(sql_error)?;
+    }
     transaction
-        .execute_batch(include_str!("library.sql"))
+        .execute_batch(include_str!("library_distribution.sql"))
         .map_err(sql_error)?;
     transaction
-        .pragma_update(None, "user_version", 2)
+        .pragma_update(None, "user_version", SCHEMA_VERSION)
         .map_err(sql_error)?;
     transaction.commit().map_err(sql_error)
 }
@@ -175,6 +185,17 @@ pub(crate) fn set_blocked(
             )
             .map_err(sql_error)?;
     }
+    transaction.execute(
+        "UPDATE library_models SET visibility = 'PRIVATE', policy_revision = policy_revision + 1,
+             updated_at = ?2
+         WHERE model_id != ?1 AND moderation_status != 'DELETED'
+           AND model_id IN (
+             SELECT copies.model_id FROM library_revision_hashes source
+             JOIN library_revision_hashes copies ON copies.hash_kind = source.hash_kind
+                 AND copies.verified_hash = source.verified_hash
+             WHERE source.model_id = ?1)",
+        params![model, sql_integer(now)?],
+    ).map_err(sql_error)?;
     transaction
         .execute(
             "INSERT INTO library_audit(actor_uuid, action, model_id, created_at, result)
