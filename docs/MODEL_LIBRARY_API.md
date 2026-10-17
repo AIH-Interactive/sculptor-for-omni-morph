@@ -26,6 +26,13 @@ revision. M4 validation passed: cargo build, the full 76-test suite and the
 separate worker-saturation test. Actual game/deployment acceptance remains
 MANUAL/PENDING.
 
+M5 catalog integration completes the planned `sort=name` whitelist option:
+the server orders display names with SQLite NOCASE, then model_id, before
+applying pagination. The API test reads three one-item pages, checks stable
+case-insensitive ties and total/has_next, and rejects arbitrary sort strings.
+Validation: cargo build, 77 regular tests and the separately run worker
+saturation test passed. No storage schema or permission semantics changed.
+
 Protobuf requests use `Authorization: Bearer <session>` and
 `x-omnimorph-epoch: <u64>`, validated by `api::protobuf::file_scope`.
 Figura requests use `x-omnimorph-auth-mode: figura` and

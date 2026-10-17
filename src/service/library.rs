@@ -330,6 +330,7 @@ impl Storage {
             "favorites" => {
                 "(SELECT count(*) FROM library_favorites f WHERE f.model_id = m.model_id) DESC, m.model_id"
             }
+            "name" => "m.display_name COLLATE NOCASE, m.model_id",
             _ => return Err(ErrorCode::InvalidMessage),
         };
         let tags: Vec<_> = query
