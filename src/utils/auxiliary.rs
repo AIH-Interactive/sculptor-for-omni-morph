@@ -25,6 +25,7 @@ pub async fn update_advanced_users(
     umanager: Arc<UManager>,
     sessions: Arc<crate::service::session::SessionRegistry>,
     config: Arc<RwLock<Config>>,
+    storage: Arc<crate::storage::Storage>,
 ) {
     let (tx, mut rx) = tokio::sync::mpsc::channel::<notify::Result<Event>>(1);
     tx.send(Ok(notify::Event::default())).await.unwrap();
@@ -39,6 +40,16 @@ pub async fn update_advanced_users(
     let mut first_time = true;
     while rx.recv().await.is_some() {
         let new_config = Config::parse(path.clone());
+        let library_config = new_config.model_library.clone();
+        let library_storage = storage.clone();
+        let reconciled = tokio::task::spawn_blocking(move || {
+            library_storage.library_admin_reconcile(&library_config)
+        })
+        .await;
+        if !matches!(reconciled, Ok(Ok(()))) {
+            tracing::error!("Administrator session revocation failed; configuration reload postponed");
+            continue;
+        }
         let mut config = config.write().await;
 
         if new_config != *config || first_time {

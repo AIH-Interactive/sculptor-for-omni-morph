@@ -10,6 +10,7 @@ use std::{
 use uuid::Uuid;
 
 mod sqlite;
+pub mod library;
 mod layout;
 #[cfg(test)]
 mod tests;
@@ -185,6 +186,14 @@ impl Storage {
     }
 
     fn transaction<T>(&self, change: impl FnOnce(&mut Manifest) -> Result<T>) -> Result<T> {
+        self.transaction_with_library(change, |_| Ok(()))
+    }
+
+    fn transaction_with_library<T>(
+        &self,
+        change: impl FnOnce(&mut Manifest) -> Result<T>,
+        library_change: impl FnOnce(&rusqlite::Transaction<'_>) -> Result<()>,
+    ) -> Result<T> {
         let mut committed = self.committed.lock().map_err(|_| ErrorCode::Internal)?;
         let mut candidate = committed.clone();
         let result = change(&mut candidate)?;
@@ -200,7 +209,7 @@ impl Storage {
             .operations
             .retain(|_, operation| operation.expires > now_seconds());
         let mut database = self.database.lock().map_err(|_| ErrorCode::Internal)?;
-        sqlite::save(&mut database, &candidate, &self.root)?;
+        sqlite::save_with(&mut database, &candidate, &self.root, library_change)?;
         *committed = candidate;
         Ok(result)
     }

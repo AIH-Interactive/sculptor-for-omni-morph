@@ -13,10 +13,10 @@ pub(super) fn migrate(avatars: &Path, database: &Path) -> Result<()> {
         let version: u32 = connection
             .pragma_query_value(None, "user_version", |row| row.get(0))
             .map_err(sql_error)?;
-        if version > 1 {
+        if version > 2 {
             return Err(ErrorCode::UnsupportedVersion);
         }
-        if version == 1 {
+        if version >= 1 {
             let completed: Option<String> = connection
                 .query_row(
                     "SELECT value FROM metadata WHERE key = 'avatars_layout'",
@@ -51,7 +51,7 @@ pub(super) fn migrate(avatars: &Path, database: &Path) -> Result<()> {
         let version: u32 = source
             .pragma_query_value(None, "user_version", |row| row.get(0))
             .map_err(sql_error)?;
-        if version > 1 {
+        if version > 2 {
             return Err(ErrorCode::UnsupportedVersion);
         }
         let staged = database.with_extension(format!(

@@ -198,7 +198,8 @@ async fn app() -> Result<bool> {
         CONFIG_VAR.clone().into(),
         Arc::clone(&state.user_manager),
         Arc::clone(&state.session),
-        Arc::clone(&state.config)
+        Arc::clone(&state.config),
+        Arc::clone(&state.storage),
     ));
     if state.config.read().await.mc_folder.exists() {
         tokio::spawn(update_bans_from_minecraft(

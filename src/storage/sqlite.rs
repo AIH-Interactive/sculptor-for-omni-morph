@@ -24,7 +24,7 @@ pub(super) fn open(root: &Path, path: &Path) -> Result<(Connection, Manifest)> {
     let version: u32 = database
         .pragma_query_value(None, "user_version", |row| row.get(0))
         .map_err(sql_error)?;
-    if version > 1 {
+    if version > 2 {
         return Err(ErrorCode::UnsupportedVersion);
     }
     database.execute_batch("PRAGMA foreign_keys = ON; PRAGMA journal_mode = WAL; PRAGMA synchronous = FULL;
@@ -86,9 +86,7 @@ pub(super) fn open(root: &Path, path: &Path) -> Result<(Connection, Manifest)> {
         save(&mut database, &manifest, root)?;
         manifest
     };
-    database
-        .pragma_update(None, "user_version", 1)
-        .map_err(sql_error)?;
+    super::library::migrate(&mut database, path, version)?;
     Ok((database, manifest))
 }
 
@@ -228,6 +226,15 @@ fn load(database: &Connection, instance_id: String) -> Result<Manifest> {
 }
 
 pub(super) fn save(database: &mut Connection, manifest: &Manifest, root: &Path) -> Result<()> {
+    save_with(database, manifest, root, |_| Ok(()))
+}
+
+pub(super) fn save_with(
+    database: &mut Connection,
+    manifest: &Manifest,
+    root: &Path,
+    library_change: impl FnOnce(&rusqlite::Transaction<'_>) -> Result<()>,
+) -> Result<()> {
     let transaction = database.transaction().map_err(sql_error)?;
     transaction
         .execute_batch(
@@ -328,6 +335,7 @@ pub(super) fn save(database: &mut Connection, manifest: &Manifest, root: &Path) 
     tests::pause_before_replace(root);
     #[cfg(not(test))]
     let _ = root;
+    library_change(&transaction)?;
     transaction.commit().map_err(sql_error)
 }
 

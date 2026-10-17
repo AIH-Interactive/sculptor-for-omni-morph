@@ -451,7 +451,7 @@ fn additive_migration_survives_process_termination() {
         println!("SKIPPED production main route toggle: set OMNIMORPH_DELIVERY_BINARY");
     }
     let database = rusqlite::Connection::open(root.join("cloud-v1/metadata.sqlite3")).unwrap();
-    database.pragma_update(None, "user_version", 2).unwrap();
+    database.pragma_update(None, "user_version", 3).unwrap();
     let future_upload = root.join("cloud-v1/uploads/future-schema.part");
     fs::write(&future_upload, b"preserve-unknown-data").unwrap();
     assert_eq!(
@@ -463,9 +463,9 @@ fn additive_migration_survives_process_termination() {
         database
             .pragma_query_value(None, "user_version", |row| row.get::<_, u32>(0))
             .unwrap(),
-        2
+        3
     );
-    database.pragma_update(None, "user_version", 1).unwrap();
+    database.pragma_update(None, "user_version", 2).unwrap();
     drop(database);
     completed(root, "recover");
     println!("SQLite process termination: additive idempotent legacy import, transaction rollback, restart, tombstones, equipment and version rejection PASS");

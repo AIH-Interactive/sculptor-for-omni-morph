@@ -91,3 +91,13 @@ pride = [0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0] # 25
 # pride = [0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0] # Check out note.txt for reference
 
 ## you can create an unlimited number of "advancedUsers" for any players.
+
+## Model library administrators are configured here, never in a game account GUI.
+## Generate an offline hash with: python tools/library_admin_hash.py
+## This is a shape example only. Replace placeholders before uncommenting.
+## Changes reload through the existing config watcher; sessions recheck fingerprints.
+## Do not commit real UUIDs, hashes or passwords.
+# [[model_library.admins]]
+# player_name = "ExampleAdmin"
+# uuid = "<authenticated-player-uuid>"
+# password_hash = "<pbkdf2-sha256$v1$iterations$salt$key>"

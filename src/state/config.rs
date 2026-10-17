@@ -22,6 +22,8 @@ pub struct Config {
     pub mc_folder: PathBuf,
     #[serde(default)]
     pub advanced_users: HashMap<Uuid, AdvancedUsers>,
+    #[serde(default, rename = "model_library")]
+    pub model_library: crate::service::library_admin::LibraryConfig,
 }
 
 fn protobuf_default() -> bool {
