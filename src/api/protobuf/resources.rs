@@ -4,12 +4,7 @@ use axum::{
     body::Body,
     extract::{Path, State},
 };
-use futures_util::StreamExt;
-use std::time::Duration;
-use tokio::{
-    fs,
-    io::{AsyncReadExt, AsyncWriteExt},
-};
+use tokio::{fs, io::AsyncReadExt};
 use tokio_util::io::ReaderStream;
 use uuid::Uuid;
 
@@ -34,49 +29,16 @@ pub async fn upload(
         Ok(upload) => upload,
         Err(code) => return failure(code, 0, Some(&scope)),
     };
-    let limit = upload.descriptor.raw_length;
-    let expected = upload.descriptor.raw_sha256.clone();
-    let path = upload.path.clone();
-    let received = tokio::time::timeout(Duration::from_secs(60), async {
-        let mut file = fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(path)
-            .await
-            .map_err(|_| ErrorCode::Internal)?;
-        let mut stream = body.into_data_stream();
-        let mut hash = ring::digest::Context::new(&ring::digest::SHA256);
-        let mut count = 0u64;
-        while let Some(chunk) = stream.next().await {
-            let bytes = chunk.map_err(|_| ErrorCode::InvalidMessage)?;
-            count = count
-                .checked_add(bytes.len() as u64)
-                .ok_or(ErrorCode::LimitExceeded)?;
-            if count > limit {
-                return Err(ErrorCode::LimitExceeded);
-            }
-            state
-                .protocol_sessions
-                .authorize(&state, &scope.id, scope.epoch)?;
-            hash.update(&bytes);
-            file.write_all(&bytes)
-                .await
-                .map_err(|_| ErrorCode::Internal)?;
-        }
-        if count != limit || hash.finish().as_ref() != expected {
-            return Err(ErrorCode::InvalidMessage);
-        }
-        file.sync_all().await.map_err(|_| ErrorCode::Internal)?;
-        Ok::<_, ErrorCode>(())
+    let received = resource::receive_upload(&mut upload, body, || {
+        state
+            .protocol_sessions
+            .authorize(&state, &scope.id, scope.epoch)
+            .map(|_| ())
     })
     .await;
     match received {
-        Ok(Ok(())) => {
-            upload.seal();
-            StatusCode::NO_CONTENT.into_response()
-        }
-        Ok(Err(code)) => failure(code, 0, Some(&scope)),
-        Err(_) => failure(ErrorCode::Offline, 0, Some(&scope)),
+        Ok(()) => StatusCode::NO_CONTENT.into_response(),
+        Err(code) => failure(code, 0, Some(&scope)),
     }
 }
 
@@ -93,6 +55,22 @@ pub async fn download(
         if revision == 0 {
             return Err(ErrorCode::InvalidMessage);
         }
+        let storage = state.storage.clone();
+        let asset_id = asset.clone();
+        let observer = scope.owner;
+        crate::service::library::work(move || {
+            storage.library_resource_access(
+                owner,
+                &asset_id,
+                revision,
+                crate::service::library_policy::Actor {
+                    uuid: observer,
+                    admin_context: false,
+                    granted: false,
+                },
+            )
+        })
+        .await?;
         let avatar = state.storage.avatar(owner, &asset, revision)?;
         let path = state.storage.blob_path(&avatar.raw_sha256)?;
         let file = fs::File::open(path)

@@ -17,9 +17,54 @@ const MAX_NODES: usize = 262_144;
 
 type Result<T> = std::result::Result<T, ErrorCode>;
 
+/// Java DataOutputStream writes UTF-16 code units using modified UTF-8, including
+/// surrogate pairs. Decode metadata exactly rather than replacing non-BMP names.
+fn modified_utf8(bytes: &[u8]) -> Result<String> {
+    let mut units = Vec::with_capacity(bytes.len());
+    let mut index = 0;
+    while index < bytes.len() {
+        let first = bytes[index];
+        let (width, value) = if first < 0x80 {
+            (1, u16::from(first))
+        } else if first & 0xe0 == 0xc0 {
+            let second = *bytes.get(index + 1).ok_or(ErrorCode::InvalidMessage)?;
+            if second & 0xc0 != 0x80 {
+                return Err(ErrorCode::InvalidMessage);
+            }
+            let value = (u16::from(first & 0x1f) << 6) | u16::from(second & 0x3f);
+            if value < 0x80 && value != 0 {
+                return Err(ErrorCode::InvalidMessage);
+            }
+            (2, value)
+        } else if first & 0xf0 == 0xe0 {
+            let second = *bytes.get(index + 1).ok_or(ErrorCode::InvalidMessage)?;
+            let third = *bytes.get(index + 2).ok_or(ErrorCode::InvalidMessage)?;
+            if second & 0xc0 != 0x80 || third & 0xc0 != 0x80 {
+                return Err(ErrorCode::InvalidMessage);
+            }
+            let value = (u16::from(first & 0x0f) << 12)
+                | (u16::from(second & 0x3f) << 6)
+                | u16::from(third & 0x3f);
+            if value < 0x800 {
+                return Err(ErrorCode::InvalidMessage);
+            }
+            (3, value)
+        } else {
+            return Err(ErrorCode::InvalidMessage);
+        };
+        units.push(value);
+        index += width;
+    }
+    String::from_utf16(&units).map_err(|_| ErrorCode::InvalidMessage)
+}
+
 pub struct PackageIdentity {
     pub model_type: ModelType,
     pub content_hash: Option<Vec<u8>>,
+    pub nbt_sha256: Vec<u8>,
+    pub ciphertext_sha256: Option<Vec<u8>>,
+    pub internal_name: Option<String>,
+    pub authors: Vec<String>,
 }
 
 #[cfg(test)]
@@ -110,6 +155,9 @@ struct Scanner<R> {
     ciphertext_hash: Option<Vec<u8>>,
     encrypted: bool,
     encrypted_forbidden_field: bool,
+    nbt_hash: ring::digest::Context,
+    internal_name: Option<String>,
+    authors: Vec<String>,
 }
 
 pub fn inspect(path: &Path) -> Result<PackageIdentity> {
@@ -130,6 +178,9 @@ fn inspect_with_budget(source: impl Read, budget: u64) -> Result<PackageIdentity
         ciphertext_hash: None,
         encrypted: false,
         encrypted_forbidden_field: false,
+        nbt_hash: ring::digest::Context::new(&ring::digest::SHA256),
+        internal_name: None,
+        authors: Vec::new(),
     };
     if scanner.byte()? != 10 {
         return Err(ErrorCode::InvalidMessage);
@@ -169,6 +220,10 @@ fn inspect_with_budget(source: impl Read, budget: u64) -> Result<PackageIdentity
     Ok(PackageIdentity {
         model_type,
         content_hash: scanner.content_hash,
+        nbt_sha256: scanner.nbt_hash.finish().as_ref().to_vec(),
+        ciphertext_sha256: scanner.ciphertext_hash,
+        internal_name: scanner.internal_name,
+        authors: scanner.authors,
     })
 }
 
@@ -180,7 +235,9 @@ impl<R: Read> Scanner<R> {
         self.remaining -= bytes.len() as u64;
         self.source
             .read_exact(bytes)
-            .map_err(|_| ErrorCode::InvalidMessage)
+            .map_err(|_| ErrorCode::InvalidMessage)?;
+        self.nbt_hash.update(bytes);
+        Ok(())
     }
 
     fn byte(&mut self) -> Result<u8> {
@@ -201,9 +258,7 @@ impl<R: Read> Scanner<R> {
         self.read(&mut length)?;
         let mut bytes = vec![0; u16::from_be_bytes(length) as usize];
         self.read(&mut bytes)?;
-        // NBT uses Java modified UTF-8. Names used for classification are ASCII;
-        // retain arbitrary legacy text without interpreting it as executable data.
-        Ok(String::from_utf8_lossy(&bytes).into_owned())
+        modified_utf8(&bytes)
     }
 
     fn skip(&mut self, mut length: u64, hash: bool) -> Result<Option<Vec<u8>>> {
@@ -290,6 +345,19 @@ impl<R: Read> Scanner<R> {
             8 => {
                 let value = self.string()?;
                 match path {
+                    "metadata/name" => self.internal_name = Some(value),
+                    "metadata/authors" => {
+                        self.authors = value
+                            .split('\n')
+                            .map(str::trim)
+                            .filter(|author| !author.is_empty())
+                            .fold(Vec::new(), |mut authors, author| {
+                                if !authors.iter().any(|existing| existing == author) {
+                                    authors.push(author.to_owned());
+                                }
+                                authors
+                            });
+                    }
                     "metadata/format" => self.format = value,
                     "ysm/container_kind" if value == "YSGP" => self.encrypted = true,
                     "ysm/content_sha256" => {

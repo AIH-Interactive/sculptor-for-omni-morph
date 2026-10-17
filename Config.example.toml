@@ -93,6 +93,10 @@ pride = [0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0] # 25
 ## you can create an unlimited number of "advancedUsers" for any players.
 
 ## Model library administrators are configured here, never in a game account GUI.
+[model_library]
+max_upload_bytes = 67108864 # 64 MiB, independent of the wardrobe limit
+categories = ["general"]
+
 ## Generate an offline hash with: python tools/library_admin_hash.py
 ## This is a shape example only. Replace placeholders before uncommenting.
 ## Changes reload through the existing config watcher; sessions recheck fingerprints.

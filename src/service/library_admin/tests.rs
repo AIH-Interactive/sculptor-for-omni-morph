@@ -71,25 +71,41 @@ fn invalid_parameters_and_duplicate_config_fail_closed() {
     let mut invalid = admin();
     invalid.password_hash = invalid.password_hash.to_ascii_uppercase();
     assert!(PasswordHash::parse(&invalid.password_hash).is_err());
-    assert!(LibraryConfig::try_from(RawLibraryConfig {
-        admins: vec![admin(), admin()]
-    })
-    .is_err());
+    assert!(
+        LibraryConfig::try_from(RawLibraryConfig {
+            admins: vec![admin(), admin()],
+            ..Default::default()
+        })
+        .is_err()
+    );
     let mut duplicate_name = admin();
     duplicate_name.uuid = Uuid::from_u128(5);
     duplicate_name.player_name = "exampleadmin".into();
-    assert!(LibraryConfig::try_from(RawLibraryConfig {
-        admins: vec![admin(), duplicate_name]
-    })
-    .is_err());
+    assert!(
+        LibraryConfig::try_from(RawLibraryConfig {
+            admins: vec![admin(), duplicate_name],
+            ..Default::default()
+        })
+        .is_err()
+    );
     let mut nil = admin();
     nil.uuid = Uuid::nil();
-    assert!(LibraryConfig::try_from(RawLibraryConfig { admins: vec![nil] }).is_err());
+    assert!(
+        LibraryConfig::try_from(RawLibraryConfig {
+            admins: vec![nil],
+            ..Default::default()
+        })
+        .is_err()
+    );
     let config: crate::state::Config =
         toml::from_str(include_str!("../../../Config.example.toml")).unwrap();
     assert!(config.model_library.admins.is_empty());
-    let configured = format!("{}\n[[model_library.admins]]\nplayer_name = \"ExampleAdmin\"\nuuid = \"{}\"\npassword_hash = \"{}\"\n",
-        include_str!("../../../Config.example.toml"), admin().uuid, admin().password_hash);
+    let configured = format!(
+        "{}\n[[model_library.admins]]\nplayer_name = \"ExampleAdmin\"\nuuid = \"{}\"\npassword_hash = \"{}\"\n",
+        include_str!("../../../Config.example.toml"),
+        admin().uuid,
+        admin().password_hash
+    );
     let config: crate::state::Config = toml::from_str(&configured).unwrap();
     assert_eq!(config.model_library.admins, vec![admin()]);
 }
@@ -257,11 +273,13 @@ fn removing_or_changing_config_permanently_revokes_old_sessions() {
         changed.player_name = "Renamed".into();
         let changed_config = LibraryConfig {
             admins: if removed { vec![] } else { vec![changed] },
+            ..Default::default()
         };
         storage.library_admin_reconcile(&changed_config).unwrap();
         storage
             .library_admin_reconcile(&LibraryConfig {
                 admins: vec![config.clone()],
+                ..Default::default()
             })
             .unwrap();
         assert_eq!(

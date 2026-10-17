@@ -18,6 +18,21 @@ struct PendingUpload {
     uploaded: bool,
 }
 
+struct CommitPermit {
+    transfers: std::sync::Arc<Transfers>,
+    key: (Uuid, Uuid),
+}
+
+impl Drop for CommitPermit {
+    fn drop(&mut self) {
+        if let Ok(mut pending) = self.transfers.pending.lock() {
+            if let Some(upload) = pending.get_mut(&self.key) {
+                upload.busy = false;
+            }
+        }
+    }
+}
+
 impl Drop for PendingUpload {
     fn drop(&mut self) {
         let _ = std::fs::remove_file(&self.path);
@@ -92,6 +107,33 @@ pub async fn grant_upload(
     owner: Uuid,
     request: &UploadRequest,
 ) -> Result<TransferGrant, ErrorCode> {
+    let storage = state.storage.clone();
+    let asset = request
+        .resource
+        .as_ref()
+        .ok_or(ErrorCode::InvalidMessage)?
+        .asset_id
+        .clone();
+    if super::library::work(move || storage.library_asset_bound(owner, &asset)).await? {
+        return Err(ErrorCode::Forbidden);
+    }
+    grant_upload_inner(state, owner, request, false).await
+}
+
+pub(crate) async fn grant_library_upload(
+    state: &AppState,
+    owner: Uuid,
+    request: &UploadRequest,
+) -> Result<TransferGrant, ErrorCode> {
+    grant_upload_inner(state, owner, request, true).await
+}
+
+async fn grant_upload_inner(
+    state: &AppState,
+    owner: Uuid,
+    request: &UploadRequest,
+    library: bool,
+) -> Result<TransferGrant, ErrorCode> {
     let operation = operation_id(&request.operation_id)?;
     let mut request = request.clone();
     let descriptor = request.resource.as_mut().ok_or(ErrorCode::InvalidMessage)?;
@@ -130,7 +172,12 @@ pub async fn grant_upload(
         return Err(ErrorCode::InvalidMessage);
     }
     let config = state.config.read().await;
-    if descriptor.raw_length > config.limitations.max_avatar_size.saturating_mul(1000) {
+    let limit = if library {
+        config.model_library.max_upload_bytes
+    } else {
+        config.limitations.max_avatar_size.saturating_mul(1000)
+    };
+    if descriptor.raw_length > limit {
         return Err(ErrorCode::LimitExceeded);
     }
     if !state
@@ -206,14 +253,16 @@ pub struct UploadWriter {
 
 impl Drop for UploadWriter {
     fn drop(&mut self) {
-        if !self.sealed {
-            let _ = std::fs::remove_file(&self.path);
-        }
+        let mut retained = false;
         if let Ok(mut pending) = self.transfers.pending.lock() {
             if let Some(upload) = pending.get_mut(&self.key) {
                 upload.busy = false;
                 upload.uploaded = self.sealed;
+                retained = true;
             }
+        }
+        if !self.sealed || !retained {
+            let _ = std::fs::remove_file(&self.path);
         }
     }
 }
@@ -222,6 +271,77 @@ impl UploadWriter {
     pub fn seal(&mut self) {
         self.sealed = true;
     }
+}
+
+/// Shared bounded stream writer for both authenticated library adapters and v1.
+pub(crate) async fn receive_upload(
+    upload: &mut UploadWriter,
+    body: axum::body::Body,
+    authorize: impl Fn() -> Result<(), ErrorCode>,
+) -> Result<(), ErrorCode> {
+    use futures_util::StreamExt;
+    use tokio::io::AsyncWriteExt;
+    let result = tokio::time::timeout(std::time::Duration::from_secs(60), async {
+        let mut file = fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&upload.path)
+            .await
+            .map_err(|_| ErrorCode::Internal)?;
+        let mut stream = body.into_data_stream();
+        let mut hash = ring::digest::Context::new(&ring::digest::SHA256);
+        let mut count = 0u64;
+        while let Some(chunk) = stream.next().await {
+            let bytes = chunk.map_err(|_| ErrorCode::InvalidMessage)?;
+            count = count
+                .checked_add(bytes.len() as u64)
+                .ok_or(ErrorCode::LimitExceeded)?;
+            if count > upload.descriptor.raw_length {
+                return Err(ErrorCode::LimitExceeded);
+            }
+            authorize()?;
+            if !upload
+                .transfers
+                .pending
+                .lock()
+                .map_err(|_| ErrorCode::Internal)?
+                .contains_key(&upload.key)
+            {
+                return Err(ErrorCode::Conflict);
+            }
+            hash.update(&bytes);
+            file.write_all(&bytes)
+                .await
+                .map_err(|_| ErrorCode::Internal)?;
+        }
+        authorize()?;
+        if count != upload.descriptor.raw_length
+            || hash.finish().as_ref() != upload.descriptor.raw_sha256
+        {
+            return Err(ErrorCode::InvalidMessage);
+        }
+        file.sync_all().await.map_err(|_| ErrorCode::Internal)?;
+        Ok(())
+    })
+    .await
+    .map_err(|_| ErrorCode::Offline)?;
+    result?;
+    upload.seal();
+    Ok(())
+}
+
+pub(crate) fn cancel_upload(
+    state: &AppState,
+    owner: Uuid,
+    operation: Uuid,
+) -> Result<(), ErrorCode> {
+    state
+        .transfers
+        .pending
+        .lock()
+        .map_err(|_| ErrorCode::Internal)?
+        .remove(&(owner, operation));
+    Ok(())
 }
 
 pub fn begin_upload(
@@ -258,8 +378,37 @@ pub async fn commit_upload(
     owner: Uuid,
     request: &CommitUpload,
 ) -> Result<AvatarDescriptor, ErrorCode> {
+    let storage = state.storage.clone();
+    let operation = request.operation_id.clone();
+    match super::library::work(move || storage.library_reservation(owner, &operation)).await {
+        Ok(_) => return Err(ErrorCode::Forbidden),
+        Err(ErrorCode::NotFound) => {}
+        Err(error) => return Err(error),
+    }
+    commit_upload_inner(state, owner, request, None).await
+}
+
+pub(crate) async fn commit_library_upload(
+    state: &AppState,
+    owner: Uuid,
+    request: &CommitUpload,
+    context: super::library::uploads::CommitContext,
+) -> Result<AvatarDescriptor, ErrorCode> {
+    commit_upload_inner(state, owner, request, Some(context)).await
+}
+
+async fn commit_upload_inner(
+    state: &AppState,
+    owner: Uuid,
+    request: &CommitUpload,
+    context: Option<super::library::uploads::CommitContext>,
+) -> Result<AvatarDescriptor, ErrorCode> {
     let operation = operation_id(&request.operation_id)?;
     if let Some(completed) = state.storage.completed_upload(owner, request)? {
+        if let Some(context) = context {
+            let storage = state.storage.clone();
+            super::library::work(move || context.check_replay(&storage)).await?;
+        }
         state
             .transfers
             .pending
@@ -269,13 +418,13 @@ pub async fn commit_upload(
         return Ok(completed);
     }
     let (descriptor, fingerprint, path) = {
-        let pending = state
+        let mut pending = state
             .transfers
             .pending
             .lock()
             .map_err(|_| ErrorCode::Internal)?;
         let upload = pending
-            .get(&(owner, operation))
+            .get_mut(&(owner, operation))
             .ok_or(ErrorCode::NotFound)?;
         if upload.expires <= crate::storage::now_seconds() || !upload.uploaded || upload.busy {
             return Err(ErrorCode::Conflict);
@@ -286,7 +435,12 @@ pub async fn commit_upload(
         {
             return Err(ErrorCode::Conflict);
         }
+        upload.busy = true;
         (descriptor, upload.fingerprint.clone(), upload.path.clone())
+    };
+    let _commit_permit = CommitPermit {
+        transfers: state.transfers.clone(),
+        key: (owner, operation),
     };
     let mut descriptor = descriptor;
     let source = if path.exists() {
@@ -307,18 +461,21 @@ pub async fn commit_upload(
             {
                 Err(ErrorCode::InvalidMessage)
             } else {
-                Ok(())
+                Ok(identity)
             }
         });
-    if let Err(code) = inspected {
-        state
-            .transfers
-            .pending
-            .lock()
-            .map_err(|_| ErrorCode::Internal)?
-            .remove(&(owner, operation));
-        return Err(code);
-    }
+    let inspected = match inspected {
+        Ok(inspected) => inspected,
+        Err(code) => {
+            state
+                .transfers
+                .pending
+                .lock()
+                .map_err(|_| ErrorCode::Internal)?
+                .remove(&(owner, operation));
+            return Err(code);
+        }
+    };
     descriptor.legacy_figura_hash = legacy_file_hash(&source).await?;
     if descriptor.content_sha256.is_empty() {
         descriptor.content_sha256 = descriptor.raw_sha256.clone();
@@ -326,14 +483,29 @@ pub async fn commit_upload(
     state
         .storage
         .publish_staged(&path, &descriptor.raw_sha256)?;
-    let max_assets = state.config.read().await.limitations.max_avatars as usize;
-    let committed = state.storage.commit_avatar(
-        owner,
-        &request.operation_id,
-        &fingerprint,
-        descriptor,
-        max_assets,
-    )?;
+    let max_assets = if context.is_some() {
+        1000
+    } else {
+        state.config.read().await.limitations.max_avatars as usize
+    };
+    let storage = state.storage.clone();
+    let upload_operation = request.operation_id.clone();
+    let committed = super::library::work(move || {
+        storage.commit_avatar_with_library(
+            owner,
+            &upload_operation,
+            &fingerprint,
+            descriptor,
+            max_assets,
+            |transaction, descriptor| {
+                if let Some(context) = context {
+                    context.publish(transaction, descriptor, &inspected)?;
+                }
+                Ok(())
+            },
+        )
+    })
+    .await?;
     state
         .transfers
         .pending

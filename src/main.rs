@@ -225,6 +225,7 @@ async fn app() -> Result<bool> {
         .route("/api/", get(check_auth))
         .route("/ws", get(ws))
         .merge(api::protobuf::router(protobuf_enabled))
+        .merge(api::library::router(state.clone()))
         .nest("/internal", internal)
         .with_state(state)
         .layer(TraceLayer::new_for_http()

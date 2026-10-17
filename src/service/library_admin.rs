@@ -12,15 +12,29 @@ use std::{
 use tokio::sync::Semaphore;
 use uuid::Uuid;
 
+pub mod operations;
+
 type Result<T> = std::result::Result<T, ErrorCode>;
 static KDF_WORKERS: LazyLock<Arc<Semaphore>> = LazyLock::new(|| Arc::new(Semaphore::new(2)));
 const ACCESS_SECONDS: u64 = 15 * 60;
 const REFRESH_SECONDS: u64 = 7 * 86400;
 
-#[derive(Clone, Default, Debug, PartialEq, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Deserialize)]
 #[serde(try_from = "RawLibraryConfig")]
 pub struct LibraryConfig {
     pub admins: Vec<AdminConfig>,
+    pub max_upload_bytes: u64,
+    pub categories: Vec<String>,
+}
+
+impl Default for LibraryConfig {
+    fn default() -> Self {
+        Self {
+            admins: Vec::new(),
+            max_upload_bytes: 64 * 1024 * 1024,
+            categories: vec!["general".into()],
+        }
+    }
 }
 
 #[derive(Default, Deserialize)]
@@ -28,6 +42,10 @@ pub struct LibraryConfig {
 struct RawLibraryConfig {
     #[serde(default)]
     admins: Vec<AdminConfig>,
+    #[serde(default)]
+    max_upload_bytes: Option<u64>,
+    #[serde(default)]
+    categories: Option<Vec<String>>,
 }
 
 impl TryFrom<RawLibraryConfig> for LibraryConfig {
@@ -53,7 +71,31 @@ impl TryFrom<RawLibraryConfig> for LibraryConfig {
             PasswordHash::parse(&admin.password_hash)
                 .map_err(|_| "invalid model library administrator password hash")?;
         }
-        Ok(Self { admins: raw.admins })
+        let max_upload_bytes = raw.max_upload_bytes.unwrap_or(64 * 1024 * 1024);
+        let categories = raw.categories.unwrap_or_else(|| vec!["general".into()]);
+        let mut unique_categories = HashSet::new();
+        if max_upload_bytes == 0
+            || max_upload_bytes > 1024 * 1024 * 1024
+            || categories.is_empty()
+            || categories.len() > 32
+            || categories.iter().any(|category| {
+                category.is_empty()
+                    || category.len() > 32
+                    || !category.bytes().all(|byte| {
+                        byte.is_ascii_lowercase()
+                            || byte.is_ascii_digit()
+                            || matches!(byte, b'_' | b'-')
+                    })
+                    || !unique_categories.insert(category)
+            })
+        {
+            return Err("invalid model library limits or categories");
+        }
+        Ok(Self {
+            admins: raw.admins,
+            max_upload_bytes,
+            categories,
+        })
     }
 }
 
@@ -205,20 +247,36 @@ fn insert_session(
 ) -> Result<AdminCredentials> {
     let access_token = secret();
     let refresh_token = (refresh_expiry > now).then(secret);
-    let refresh_hash = refresh_token.as_deref().map(token_hash).transpose()?;
     let expires_at = now.checked_add(ACCESS_SECONDS).ok_or(ErrorCode::Internal)?;
+    let credentials = AdminCredentials {
+        access_token,
+        refresh_token,
+        expires_at,
+    };
+    insert_credentials(transaction, binding, family, refresh_expiry, &credentials)?;
+    Ok(credentials)
+}
+
+fn insert_credentials(
+    transaction: &rusqlite::Transaction<'_>,
+    binding: &AdminBinding<'_>,
+    family: &str,
+    refresh_expiry: u64,
+    credentials: &AdminCredentials,
+) -> Result<()> {
+    let refresh_hash = credentials
+        .refresh_token
+        .as_deref()
+        .map(token_hash)
+        .transpose()?;
     transaction.execute(
         "INSERT INTO library_admin_sessions
          (token_hash, refresh_hash, family_id, player_uuid, origin, instance_id,
           config_revision, expires_at, refresh_expires_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
-        params![token_hash(&access_token)?, refresh_hash, family, binding.player.to_string(),
-            binding.origin, binding.instance, binding.config.fingerprint(), sql_integer(expires_at)?, sql_integer(refresh_expiry)?],
+        params![token_hash(&credentials.access_token)?, refresh_hash, family, binding.player.to_string(),
+            binding.origin, binding.instance, binding.config.fingerprint(), sql_integer(credentials.expires_at)?, sql_integer(refresh_expiry)?],
     ).map_err(|_| ErrorCode::Internal)?;
-    Ok(AdminCredentials {
-        access_token,
-        refresh_token,
-        expires_at,
-    })
+    Ok(())
 }
 
 impl Storage {

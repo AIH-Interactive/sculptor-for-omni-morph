@@ -1,7 +1,6 @@
 # Model library v1 contract (M0)
 
-Frozen on 2026-10-18. Implementation status: contract only. No library route is
-implemented by this milestone. The client plan `docs/MODEL_LIBRARY_IMPLEMENTATION_PLAN.md`
+Frozen on 2026-10-18, with explicit user amendments recorded below. The client plan `docs/MODEL_LIBRARY_IMPLEMENTATION_PLAN.md`
 sections 1, 3–7 is normative; this document resolves its implementation choices.
 This extends Sculptor, never the separate `spm-cloud` service. No protocol v1
 field numbers, release hashes, application versions, or wardrobe UI change.
@@ -47,7 +46,12 @@ Ordinary scopes never expose blocked records, even to their uploader.
 | DELETED | Administrator audit/management context only | Nobody; no new transfer/equip |
 
 Private always overrides grants. Admin management may inspect active private
-metadata and packages, but cannot distribute them to other players. PUBLIC
+metadata and packages. A later explicit user amendment allows a player to opt
+into showing their own current private equipment to observers, default false.
+This is a source-equipment render permission only: library list, details, covers,
+download and grants remain private. Closing that option or changing equipment
+revokes it; blocked/deleted identities still prohibit observer distribution.
+M3 implements this option and its two-protocol invalidation. PUBLIC
 authorized distribution evaluates the observer's grant, not just the wearer.
 Metadata visibility and full-use permission are separate decisions. A visible
 but locked model can be favorited, and its permitted public cover can be read.
@@ -73,7 +77,8 @@ Pending resources are inaccessible to legacy commit/equip/download/delete RPCs.
 
 ## Routes and JSON
 
-All paths below have prefix `/api/library/v1`. These are planned routes.
+All paths below have prefix `/api/library/v1`. Equip remains M3; the other
+routes are implemented in M2.
 `owner` means authenticated uploader; `use` means the complete-use policy above.
 
 | Method/path | Request / result | Policy |
@@ -93,7 +98,7 @@ All paths below have prefix `/api/library/v1`. These are planned routes.
 | POST models/{id}/transfers | operation_id, purpose=preview/download, model_revision | Use |
 | GET transfers/{id} | Package bytes, digest/length headers | Same actor, purpose, revision, unexpired and current policy |
 | POST transfers/{id}/complete | operation_id, raw_sha256 | Same actor, completed byte stream, download receipt |
-| POST models/{id}/equip | operation_id, model_revision, expected_equipment_revision | Use, creates source-bound self alias |
+| POST models/{id}/equip | operation_id, model_revision, expected_equipment_revision, show_private_equipment=false | Use, creates source-bound self alias; optional private observer rendering |
 | GET models/{id}/grants | page/page_size; UUID/name/time entries | Owner/admin |
 | PUT/DELETE models/{id}/grants/{uuid} | operation_id, expected_revision | Owner/admin |
 | GET players/resolve | name, model_id; verified directory candidates | Owner/admin of model, rate limited |
@@ -296,3 +301,89 @@ operation conflicts, persistent bans across delete/unblock, independent PBKDF2
 vector, invalid config, identity/expiry bindings, refresh replay, logout and
 durable config-change revocation. Scoped rustfmt and `git diff --check` pass.
 M1 has no GUI; deploying real administrator credentials is MANUAL/PENDING.
+
+## M2 implementation and deployment checkpoint
+
+The JSON extension is mounted at `/api/library/v1`. List/detail/edit/delete,
+favorites, grants, player resolution, covers, upload reserve/body/commit/cancel,
+preview/download transfers and administrator login/refresh/logout/block are
+implemented. Equipment, observer invalidation and the complete legacy-route
+policy audit remain M3 work. `capabilities.enabled` therefore stays false until
+that closure is validated. Frozen Protobuf v1 messages are unchanged.
+
+Every request requires the existing authenticated player. Protobuf mode uses
+its existing bearer and epoch headers. Figura mode explicitly selects
+`x-omnimorph-auth-mode: figura` and sends the existing player token as
+`Authorization: Bearer ...`, without an epoch. Native `token` headers and
+duplicate credential headers are rejected. The server supplies the uploader
+UUID/name; client-supplied identity fields are rejected.
+
+Administrator requests additionally bind `x-omnimorph-origin` to the request
+Host and the existing server instance. Authenticated administrator operations
+use `x-omnimorph-admin`. Reverse proxies must preserve the public Host and serve
+the configured trusted HTTPS endpoint. A successful password login grants only
+the configured UUID its short-lived administration session. Configuration reload
+holds the publication lock through durable revocation; issuance rechecks the
+current configuration under that same lock.
+
+Mutations carry UUID `operation_id`; versioned changes also carry
+`expected_revision`. Retrying the same operation and body returns its result;
+changing the body conflicts. Login/refresh retries reconstruct credentials using
+a process-local keyed derivation, while SQLite stores only credential hashes
+and nonsensitive operation metadata. Restart invalidates the process binding:
+start a fresh login operation. Reusing a consumed refresh token with a different
+operation revokes its family. Password admission is bounded to five attempts per
+60 seconds per player/instance, in addition to the two concurrent KDF limit.
+
+`[model_library]` configures `max_upload_bytes` (default 64 MiB, allowed 1 byte
+through 1 GiB) and category identifiers (default `general`). The library upload
+limit is independent of the wardrobe limit; existing `canUpload` still applies.
+Clients read capabilities before starting an upload. Upload bodies use
+`application/octet-stream`; control requests/responses have a 64 KiB budget.
+Source names accept ZIP/YSM only; actual distribution bytes and model type are
+validated before atomic publication. Pending records stay out of public lists
+and old resource routes. Interrupted bodies can retry the same grant; after a
+server restart, repeat reserve to obtain a new in-memory grant for the same
+draft. Cancel never publishes a partial model.
+
+For unencrypted packages, the server checks parsed internal name/authors and
+records verified raw/NBT identities. Encrypted YSM retains ciphertext and marks
+metadata `CLIENT_EXTRACTED`; it does not claim that client metadata is verified
+plaintext. An authorization-required model automatically grants its uploader;
+that uploader grant cannot be revoked. Visibility and authorization remain
+independent, editable fields. Client-side model `free` metadata supplies only
+the upload form's initial authorization selection (M4).
+
+Covers accept decoded PNG/JPEG only, at most 2 MiB, dimensions at most
+2048×2048, with a 32 MiB decoder allocation budget. Missing custom covers return
+404 `NO_IMAGE`; the client supplies the fixed placeholder. Images use immutable
+blob storage, without persisting placeholder copies.
+
+Transfers expire after 120 seconds and bind player, purpose, model revision and
+policy revision. Each stream rechecks player and source access at chunk
+boundaries. At most two streams per player and 32 globally are admitted. SQLite
+work uses an eight-worker bounded pool and returns 503 when saturated. Formal
+download counting requires the full server stream plus a matching client hash
+acknowledgment; preview never counts. Counts deduplicate by player/model/revision
+per UTC day. Receiving headers or requesting a file alone does not count.
+
+Errors use the frozen JSON envelope, including localization key, request ID and
+retryability. Status codes include 400/401/403/404/409/413/415/429/503. Responses
+are `no-store`. Logs contain route templates, status, elapsed time and control
+body byte count; credentials, private search strings and model bodies are not
+logged. Player rate accounting charges each dispatch once, not every chunk.
+
+M2 automated evidence (2026-10-18): `cargo test library` 34 passed; the isolated
+`cargo test worker_saturation_returns_503_and_recovers_after_permits_are_released
+-- --ignored --test-threads=1` passed. Full `cargo test` passed 59 tests with that
+one intentional isolated test excluded; together all 60 registered tests ran.
+`cargo build` also succeeded (exit 0); six unused-code warnings concern existing
+foundation/test entry points and distribution hooks awaiting M3. Scoped rustfmt
+and `git diff --check` passed. No production credentials or deployed data were
+used for destructive test cases.
+Real temporary Axum servers exercise disconnects, restart, commit races,
+atomic rollback, encrypted identity, covers, policy/expiry changes, player
+revocation, administrator configuration removal/restoration, token retries,
+refresh-family revocation, login limits and stable error responses. Synthetic
+encrypted vectors prove parser behavior only. Real deployments, password entry
+and Minecraft GUI/rendering remain `MANUAL/PENDING` for the planned later stages.

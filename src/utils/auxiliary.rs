@@ -40,6 +40,10 @@ pub async fn update_advanced_users(
     let mut first_time = true;
     while rx.recv().await.is_some() {
         let new_config = Config::parse(path.clone());
+        // Credential issuance holds a read guard through its SQLite commit. Take
+        // the write guard before revocation so an old credential cannot be issued
+        // between revocation and publishing a changed administrator configuration.
+        let mut config = config.write().await;
         let library_config = new_config.model_library.clone();
         let library_storage = storage.clone();
         let reconciled = tokio::task::spawn_blocking(move || {
@@ -50,7 +54,6 @@ pub async fn update_advanced_users(
             tracing::error!("Administrator session revocation failed; configuration reload postponed");
             continue;
         }
-        let mut config = config.write().await;
 
         if new_config != *config || first_time {
             if !first_time { tracing::info!("Server configuration modification detected!") }

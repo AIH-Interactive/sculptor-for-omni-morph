@@ -1,4 +1,5 @@
 pub mod equipment;
+pub mod library;
 pub mod library_admin;
 pub mod library_policy;
 pub mod event;

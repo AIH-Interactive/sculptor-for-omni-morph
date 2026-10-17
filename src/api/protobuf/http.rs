@@ -164,6 +164,23 @@ pub async fn dispatch(
             if request.revision == 0 {
                 return Err(ErrorCode::InvalidMessage);
             }
+            let storage = state.storage.clone();
+            let asset = request.asset_id.clone();
+            let revision = request.revision;
+            let observer = scope.owner;
+            crate::service::library::work(move || {
+                storage.library_resource_access(
+                    owner,
+                    &asset,
+                    revision,
+                    crate::service::library_policy::Actor {
+                        uuid: observer,
+                        admin_context: false,
+                        granted: false,
+                    },
+                )
+            })
+            .await?;
             resource::ensure_legacy_import(state, owner, false).await?;
             let avatar = state
                 .storage

@@ -194,6 +194,14 @@ impl Storage {
         change: impl FnOnce(&mut Manifest) -> Result<T>,
         library_change: impl FnOnce(&rusqlite::Transaction<'_>) -> Result<()>,
     ) -> Result<T> {
+        self.transaction_with_library_result(change, |transaction, _| library_change(transaction))
+    }
+
+    fn transaction_with_library_result<T>(
+        &self,
+        change: impl FnOnce(&mut Manifest) -> Result<T>,
+        library_change: impl FnOnce(&rusqlite::Transaction<'_>, &T) -> Result<()>,
+    ) -> Result<T> {
         let mut committed = self.committed.lock().map_err(|_| ErrorCode::Internal)?;
         let mut candidate = committed.clone();
         let result = change(&mut candidate)?;
@@ -209,7 +217,9 @@ impl Storage {
             .operations
             .retain(|_, operation| operation.expires > now_seconds());
         let mut database = self.database.lock().map_err(|_| ErrorCode::Internal)?;
-        sqlite::save_with(&mut database, &candidate, &self.root, library_change)?;
+        sqlite::save_with(&mut database, &candidate, &self.root, |transaction| {
+            library_change(transaction, &result)
+        })?;
         *committed = candidate;
         Ok(result)
     }
@@ -440,39 +450,65 @@ impl Storage {
         owner: Uuid,
         operation: &str,
         fingerprint: &[u8],
-        mut avatar: AvatarDescriptor,
+        avatar: AvatarDescriptor,
         max_assets: usize,
     ) -> Result<AvatarDescriptor> {
-        self.transaction(|manifest| {
-            if let Some(result) =
-                replay::<AvatarDescriptor>(manifest, owner, operation, fingerprint)?
-            {
-                return Ok(result);
-            }
-            let account = manifest.owners.entry(owner).or_default();
-            if !account.assets.contains_key(&avatar.asset_id) && account.assets.len() >= max_assets
-            {
-                return Err(ErrorCode::LimitExceeded);
-            }
-            let history = account.assets.entry(avatar.asset_id.clone()).or_default();
-            if history.len() >= 1024 {
-                return Err(ErrorCode::LimitExceeded);
-            }
-            avatar.owner = owner.to_string();
-            avatar.revision = history
-                .last_key_value()
-                .map(|(revision, _)| revision + 1)
-                .unwrap_or(1);
-            history.insert(
-                avatar.revision,
-                StoredAvatar {
-                    descriptor: avatar.encode_to_vec(),
-                    tombstone: false,
-                },
-            );
-            remember(manifest, owner, operation, fingerprint, &avatar)?;
-            Ok(avatar.clone())
-        })
+        if self.library_asset_bound(owner, &avatar.asset_id)? {
+            return Err(ErrorCode::Forbidden);
+        }
+        self.commit_avatar_with_library(
+            owner,
+            operation,
+            fingerprint,
+            avatar,
+            max_assets,
+            |_, _| Ok(()),
+        )
+    }
+
+    pub(crate) fn commit_avatar_with_library(
+        &self,
+        owner: Uuid,
+        operation: &str,
+        fingerprint: &[u8],
+        mut avatar: AvatarDescriptor,
+        max_assets: usize,
+        library_change: impl FnOnce(&rusqlite::Transaction<'_>, &AvatarDescriptor) -> Result<()>,
+    ) -> Result<AvatarDescriptor> {
+        self.transaction_with_library_result(
+            |manifest| {
+                if let Some(result) =
+                    replay::<AvatarDescriptor>(manifest, owner, operation, fingerprint)?
+                {
+                    return Ok(result);
+                }
+                let account = manifest.owners.entry(owner).or_default();
+                if !account.assets.contains_key(&avatar.asset_id)
+                    && account.assets.len() >= max_assets
+                {
+                    return Err(ErrorCode::LimitExceeded);
+                }
+                let history = account.assets.entry(avatar.asset_id.clone()).or_default();
+                if history.len() >= 1024 {
+                    return Err(ErrorCode::LimitExceeded);
+                }
+                avatar.owner = owner.to_string();
+                avatar.revision = history
+                    .last_key_value()
+                    .map(|(revision, _)| revision + 1)
+                    .unwrap_or(1);
+                history.insert(
+                    avatar.revision,
+                    StoredAvatar {
+                        descriptor: avatar.encode_to_vec(),
+                        tombstone: false,
+                    },
+                );
+                remember(manifest, owner, operation, fingerprint, &avatar)?;
+                Ok(avatar.clone())
+            },
+            library_change,
+        )
     }
 
     pub fn replay_avatar(
@@ -522,6 +558,9 @@ impl Storage {
     }
 
     pub fn equip(&self, owner: Uuid, request: &Equip) -> Result<EquippedState> {
+        if !request.clear && self.library_asset_bound(owner, &request.asset_id)? {
+            return Err(ErrorCode::Forbidden);
+        }
         let fingerprint = sha256(&[b"equip".as_slice(), &request.encode_to_vec()].concat());
         self.transaction(|manifest| {
             if let Some(result) =
@@ -566,6 +605,9 @@ impl Storage {
     }
 
     pub fn delete(&self, owner: Uuid, request: &Delete) -> Result<Ack> {
+        if self.library_asset_bound(owner, &request.asset_id)? {
+            return Err(ErrorCode::Forbidden);
+        }
         let fingerprint = sha256(&[b"delete".as_slice(), &request.encode_to_vec()].concat());
         self.transaction(|manifest| {
             if let Some(result) =

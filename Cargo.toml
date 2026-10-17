@@ -10,6 +10,7 @@ rusqlite = { version = "=0.40.2", features = ["bundled", "backup"] }
 prost = "=0.14.3"
 prost-types = "=0.14.3"
 flate2 = "=1.0.35"
+image = { version = "=0.25.9", default-features = false, features = ["png", "jpeg"] }
 crc32fast = "=1.4.2"
 futures-util = { version = "=0.3.31", default-features = false, features = ["sink", "std"] }
 tokio-util = { version = "=0.7.12", features = ["io"] }
