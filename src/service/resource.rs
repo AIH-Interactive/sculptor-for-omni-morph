@@ -483,9 +483,6 @@ async fn commit_upload_inner(
     if descriptor.content_sha256.is_empty() {
         descriptor.content_sha256 = descriptor.raw_sha256.clone();
     }
-    state
-        .storage
-        .publish_staged(&path, &descriptor.raw_sha256)?;
     let max_assets = if context.is_some() {
         1000
     } else {
@@ -494,6 +491,8 @@ async fn commit_upload_inner(
     let storage = state.storage.clone();
     let upload_operation = request.operation_id.clone();
     let committed = super::library::work(move || {
+        let _publication = storage.lock_blob_files()?;
+        storage.publish_staged_locked(&path, &descriptor.raw_sha256, context.is_some())?;
         storage.commit_avatar_with_library(
             owner,
             &upload_operation,
@@ -587,7 +586,8 @@ pub async fn ensure_legacy_import(
         .await
         .map_err(|_| ErrorCode::Internal)??;
     let model_type = identity.model_type as i32;
-    state.storage.publish_staged(&snapshot.0, &hash)?;
+    let _publication = state.storage.lock_blob_files()?;
+    state.storage.publish_staged_locked(&snapshot.0, &hash, false)?;
     state.storage.import_legacy(
         AvatarDescriptor {
             owner: owner.to_string(),
@@ -612,7 +612,7 @@ pub async fn ensure_legacy_import(
 
 pub fn legacy_path(owner: Uuid, temporary: bool) -> PathBuf {
     let root = PathBuf::from(&*AVATARS_VAR);
-    let root = root.join(if temporary { "upload" } else { "models" });
+    let root = root.join(if temporary { "upload" } else { "wardrobe" });
     root.join(format!("{owner}.moon"))
 }
 

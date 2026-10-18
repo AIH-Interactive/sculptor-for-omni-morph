@@ -4,7 +4,7 @@ use rusqlite::{Connection, OptionalExtension, Transaction, params};
 use std::path::Path;
 use uuid::Uuid;
 
-pub(super) const SCHEMA_VERSION: u32 = 4;
+pub(super) const SCHEMA_VERSION: u32 = 5;
 
 pub(crate) fn sql_integer(value: u64) -> Result<i64> {
     i64::try_from(value).map_err(|_| ErrorCode::InvalidMessage)
@@ -36,15 +36,23 @@ pub(super) fn migrate(database: &mut Connection, path: &Path, version: u32) -> R
             .execute_batch(include_str!("library_distribution.sql"))
             .map_err(sql_error)?;
     }
-    transaction
-        .execute_batch(include_str!("library_reports.sql"))
-        .map_err(sql_error)?;
-    transaction
-        .execute_batch(include_str!("library_wardrobe.sql"))
-        .map_err(sql_error)?;
-    transaction
-        .execute_batch(include_str!("library_appeals.sql"))
-        .map_err(sql_error)?;
+    if version < 4 {
+        transaction
+            .execute_batch(include_str!("library_reports.sql"))
+            .map_err(sql_error)?;
+        transaction
+            .execute_batch(include_str!("library_wardrobe.sql"))
+            .map_err(sql_error)?;
+        transaction
+            .execute_batch(include_str!("library_appeals.sql"))
+            .map_err(sql_error)?;
+    }
+    transaction.execute_batch(
+        "CREATE TABLE IF NOT EXISTS library_recycle (
+         model_id TEXT PRIMARY KEY REFERENCES library_models(model_id),
+         original_status TEXT NOT NULL, deleted_at INTEGER NOT NULL,
+         purged INTEGER NOT NULL DEFAULT 0 CHECK(purged IN (0,1)));"
+    ).map_err(sql_error)?;
     transaction
         .pragma_update(None, "user_version", SCHEMA_VERSION)
         .map_err(sql_error)?;

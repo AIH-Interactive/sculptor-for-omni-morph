@@ -252,3 +252,32 @@ pub async fn unblock(
 ) -> Result<Response> {
     change_block(state, id, headers, body, false).await
 }
+
+async fn recover_model(
+    state: AppState,
+    id: String,
+    headers: HeaderMap,
+    body: std::result::Result<Json<Mutation>, JsonRejection>,
+    purge: bool,
+) -> Result<Response> {
+    let actor = actor(&state, &headers).await?;
+    let input = parse_json(body)?;
+    let storage = state.storage.clone();
+    let result = blocking(move || storage.library_recover(actor, &id, &input, purge)).await?;
+    state.subscribes.invalidate_observers();
+    json_response(result)
+}
+
+pub async fn restore(
+    State(state): State<AppState>, Path(id): Path<String>, headers: HeaderMap,
+    body: std::result::Result<Json<Mutation>, JsonRejection>,
+) -> Result<Response> {
+    recover_model(state, id, headers, body, false).await
+}
+
+pub async fn purge(
+    State(state): State<AppState>, Path(id): Path<String>, headers: HeaderMap,
+    body: std::result::Result<Json<Mutation>, JsonRejection>,
+) -> Result<Response> {
+    recover_model(state, id, headers, body, true).await
+}

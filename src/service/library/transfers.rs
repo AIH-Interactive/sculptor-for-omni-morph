@@ -125,7 +125,7 @@ impl Storage {
             library::validate_hash("RAW_SHA256", &hash)?;
             let mut digest = [0; 32];
             faster_hex::hex_decode(hash.as_bytes(), &mut digest).map_err(|_| ErrorCode::Internal)?;
-            Ok(TransferFile { path: self.blob_path(&digest)?, raw_sha256: hash,
+            Ok(TransferFile { path: self.library_blob_path(&digest)?, raw_sha256: hash,
                 length: u64::try_from(length).map_err(|_| ErrorCode::Internal)? })
         })
     }

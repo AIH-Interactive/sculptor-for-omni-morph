@@ -11,6 +11,7 @@ use tokio::sync::RwLock;
 
 mod admin;
 mod catalog;
+mod recycle;
 mod reports;
 mod appeals;
 mod acceptance;
@@ -87,10 +88,19 @@ impl Server {
     }
 
     async fn start() -> Self {
+        Self::start_with_layout(false).await
+    }
+
+    async fn start_with_layout(production: bool) -> Self {
         std::sync::LazyLock::force(&LEGACY_DIRECTORY);
         let permit = TEST_SERVERS.clone().acquire_owned().await.unwrap();
         let directory = tempfile::tempdir().unwrap();
-        let storage = Arc::new(Storage::open(directory.path()).unwrap());
+        let storage = if production {
+            Storage::open_avatars(directory.path().join("data/avatars"), directory.path().join("data/metadata.sqlite3"))
+        } else {
+            Storage::open(directory.path())
+        };
+        let storage = Arc::new(storage.unwrap());
         let mut config: crate::state::Config =
             toml::from_str(include_str!("../../../Config.example.toml")).unwrap();
         config.limitations.can_upload = true;

@@ -6,6 +6,7 @@ mod distribution;
 pub(crate) use distribution::{can_observe_model, event_visible, record_identity};
 pub mod transfers;
 pub mod uploads;
+pub mod recycle;
 use super::library_policy::{Actor, Moderation, Policy, Visibility};
 use crate::{
     protocol::v1::ErrorCode,
@@ -222,7 +223,8 @@ pub(crate) fn model(
     crate::service::resource::operation_id(id)?;
     let mut model = database
         .query_row(
-            &format!("{MODEL_SELECT} WHERE m.model_id = :id"),
+            &format!("{MODEL_SELECT} WHERE m.model_id = :id AND NOT EXISTS(
+                SELECT 1 FROM library_recycle r WHERE r.model_id = m.model_id AND r.purged = 1)"),
             named_params! {":id": id, ":actor": actor.uuid.to_string()},
             model_row,
         )
@@ -261,6 +263,9 @@ fn actions(database: &Connection, model: &mut Model, mut actor: Actor) -> Result
     }
     if actor.admin_context {
         allowed.push("moderate");
+        if model.policy.moderation == Moderation::Deleted {
+            allowed.extend(["restore", "purge"]);
+        }
     }
     model.summary.allowed_actions = allowed;
     Ok(())
@@ -354,6 +359,7 @@ impl Storage {
         );
         let tags = serde_json::to_string(&tags).map_err(|_| ErrorCode::Internal)?;
         let predicate = r"m.published = 1
+            AND NOT EXISTS(SELECT 1 FROM library_recycle r WHERE r.model_id = m.model_id AND r.purged = 1)
             AND (:admin OR (m.moderation_status = 'ACTIVE' AND (m.visibility = 'PUBLIC' OR m.uploader_uuid = :actor)))
             AND (:scope != 'public' OR m.visibility = 'PUBLIC')
             AND (:scope != 'mine' OR m.uploader_uuid = :actor)
@@ -569,12 +575,13 @@ impl Storage {
     }
 
     pub fn library_delete(&self, actor: Actor, id: &str, input: &Mutation) -> Result<Value> {
+        let _publication = self.lock_blob_files()?;
         let operation = super::resource::operation_id(&input.operation_id)?;
         super::resource::operation_id(id)?;
         let fingerprint = crate::storage::sha256(
             &serde_json::to_vec(&json!([id, "delete", input])).map_err(|_| ErrorCode::Internal)?,
         );
-        self.library_transaction(|transaction| {
+        let result = self.library_transaction(|transaction| {
             let ownership: Option<(String, String)> = transaction.query_row(
                 "SELECT uploader_uuid, moderation_status FROM library_models WHERE model_id = ?1", [id],
                 |row| Ok((row.get(0)?, row.get(1)?)),
@@ -593,13 +600,20 @@ impl Storage {
                 if item.summary.policy_revision != library::sql_integer(input.expected_revision)? {
                     return Err(ErrorCode::Conflict);
                 }
+                self.archive_library(transaction, id)?;
+                transaction.execute("INSERT INTO library_recycle(model_id, original_status, deleted_at)
+                    VALUES (?1, ?2, ?3) ON CONFLICT(model_id) DO UPDATE SET
+                    original_status = excluded.original_status, deleted_at = excluded.deleted_at, purged = 0",
+                    params![id, status, library::sql_integer(now_seconds())?]).map_err(sql_error)?;
                 transaction.execute("UPDATE library_models SET moderation_status = 'DELETED' WHERE model_id = ?1", [id]).map_err(sql_error)?;
                 advance(transaction, id)?;
                 // Bans, immutable revisions and bindings survive logical deletion.
                 serde_json::to_vec(&json!({"model_id": id, "policy_revision": item.summary.policy_revision + 1})).map_err(|_| ErrorCode::Internal)
             })?;
             serde_json::from_slice(&bytes).map_err(|_| ErrorCode::Internal)
-        })
+        })?;
+        self.library_read(|database| self.clean_library_files(database, id))?;
+        Ok(result)
     }
 
     pub fn library_block(

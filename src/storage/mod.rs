@@ -11,6 +11,7 @@ use uuid::Uuid;
 
 mod sqlite;
 pub mod library;
+pub(crate) mod recycle;
 pub(crate) mod library_equipment;
 pub(crate) mod library_wardrobe;
 mod layout;
@@ -66,6 +67,8 @@ pub struct Storage {
     root: PathBuf,
     uploads: PathBuf,
     models: PathBuf,
+    wardrobe: PathBuf,
+    recycle: PathBuf,
     committed: Mutex<Manifest>,
     blob_publication: Mutex<()>,
     database: Mutex<rusqlite::Connection>,
@@ -112,6 +115,8 @@ impl Storage {
             avatars.join("upload"),
             avatars.join("models"),
         )?;
+        storage.separate_wardrobe_files()?;
+        storage.reconcile_library_recycle()?;
         // Mark only after files and metadata are usable. Retained backups must not
         // resurrect deleted models or consumed temporary uploads on later starts.
         {
@@ -134,6 +139,11 @@ impl Storage {
         models: PathBuf,
     ) -> Result<Self> {
         fs::create_dir_all(&models).map_err(|_| ErrorCode::Internal)?;
+        let parent = models.parent().ok_or(ErrorCode::Internal)?;
+        let wardrobe = parent.join("wardrobe");
+        let recycle = parent.join("recycle");
+        fs::create_dir_all(&wardrobe).map_err(|_| ErrorCode::Internal)?;
+        fs::create_dir_all(&recycle).map_err(|_| ErrorCode::Internal)?;
         fs::create_dir_all(&uploads).map_err(|_| ErrorCode::Internal)?;
         if let Some(parent) = database_path.parent() {
             fs::create_dir_all(parent).map_err(|_| ErrorCode::Internal)?;
@@ -160,6 +170,8 @@ impl Storage {
             root,
             uploads,
             models,
+            wardrobe,
+            recycle,
             committed: Mutex::new(manifest),
             blob_publication: Mutex::new(()),
             database: Mutex::new(database),
@@ -181,6 +193,15 @@ impl Storage {
     }
 
     pub fn blob_path(&self, hash: &[u8]) -> Result<PathBuf> {
+        if hash.len() != 32 {
+            return Err(ErrorCode::InvalidMessage);
+        }
+        let library = self.library_blob_path(hash)?;
+        let wardrobe = self.wardrobe.join(faster_hex::hex_string(hash));
+        Ok(if library.is_file() { library } else { wardrobe })
+    }
+
+    pub fn library_blob_path(&self, hash: &[u8]) -> Result<PathBuf> {
         if hash.len() != 32 {
             return Err(ErrorCode::InvalidMessage);
         }
@@ -548,11 +569,24 @@ impl Storage {
     }
 
     pub fn publish_staged(&self, path: &Path, hash: &[u8]) -> Result<()> {
-        let _publication = self
-            .blob_publication
-            .lock()
-            .map_err(|_| ErrorCode::Internal)?;
-        let target = self.blob_path(hash)?;
+        let _publication = self.lock_blob_files()?;
+        self.publish_staged_locked(path, hash, false)
+    }
+
+    pub(crate) fn lock_blob_files(&self) -> Result<std::sync::MutexGuard<'_, ()>> {
+        self.blob_publication.lock().map_err(|_| ErrorCode::Internal)
+    }
+
+    /// Caller holds lock_blob_files through the corresponding metadata commit.
+    pub(crate) fn publish_staged_locked(&self, path: &Path, hash: &[u8], library: bool) -> Result<()> {
+        if hash.len() != 32 {
+            return Err(ErrorCode::InvalidMessage);
+        }
+        let target = if library {
+            self.library_blob_path(hash)?
+        } else {
+            self.wardrobe.join(faster_hex::hex_string(hash))
+        };
         if target.exists() {
             return Ok(());
         }
@@ -607,11 +641,12 @@ impl Storage {
     }
 
     pub fn delete(&self, owner: Uuid, request: &Delete) -> Result<Ack> {
+        let _publication = self.lock_blob_files()?;
         if self.library_asset_bound(owner, &request.asset_id)? {
             return Err(ErrorCode::Forbidden);
         }
         let fingerprint = sha256(&[b"delete".as_slice(), &request.encode_to_vec()].concat());
-        self.transaction(|manifest| {
+        let result = self.transaction(|manifest| {
             if let Some(result) =
                 replay::<Ack>(manifest, owner, &request.operation_id, &fingerprint)?
             {
@@ -629,6 +664,7 @@ impl Storage {
             if latest.tombstone {
                 return Err(ErrorCode::NotFound);
             }
+            self.archive_wardrobe(owner, request, history)?;
             for stored in history.values_mut() {
                 stored.tombstone = true;
             }
@@ -658,7 +694,9 @@ impl Storage {
                 &result,
             )?;
             Ok(result)
-        })
+        })?;
+        self.clean_deleted_wardrobe(owner, &request.asset_id)?;
+        Ok(result)
     }
 }
 

@@ -4,6 +4,8 @@ use crate::storage::Storage;
 const NOW: u64 = 1000;
 
 fn equipment(storage: &Storage, owner: Uuid) -> EquippedState {
+    // This fixture bypasses the upload service; retain a payload for delete/recycle.
+    std::fs::write(storage.blob_path(&[1; 32]).unwrap(), vec![0; 100]).unwrap();
     let operation = Uuid::from_u128(101).to_string();
     let avatar = storage
         .commit_avatar(

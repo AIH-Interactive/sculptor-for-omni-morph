@@ -51,6 +51,7 @@ impl Storage {
         );
         // Reject unauthorized writes before file publication. The transaction checks again.
         self.library_read(|database| require_action(&model(database, id, actor, true)?, "image"))?;
+        let _publication = self.lock_blob_files()?;
         let temporary = self.upload_path(
             actor.uuid,
             Uuid::parse_str(&random_id()).map_err(|_| ErrorCode::Internal)?,
@@ -65,7 +66,7 @@ impl Storage {
             file.write_all(bytes).map_err(|_| ErrorCode::Internal)?;
             file.sync_all().map_err(|_| ErrorCode::Internal)?;
             drop(file);
-            self.publish_staged(&temporary, &hash)
+            self.publish_staged_locked(&temporary, &hash, true)
         })();
         let _ = std::fs::remove_file(&temporary);
         written?;
@@ -124,7 +125,7 @@ impl Storage {
             faster_hex::hex_decode(hash.as_bytes(), &mut digest)
                 .map_err(|_| ErrorCode::Internal)?;
             Ok(ImageFile {
-                path: self.blob_path(&digest)?,
+                path: self.library_blob_path(&digest)?,
                 media_type,
                 length: u64::try_from(length).map_err(|_| ErrorCode::Internal)?,
             })

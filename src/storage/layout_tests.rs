@@ -22,7 +22,7 @@ fn relocates_wal_database_and_original_models_without_overwriting_new_data() {
         .unwrap();
     let raw = b"original distribution bytes";
     let hash = sha256(raw);
-    fs::write(storage.blob_path(&hash).unwrap(), raw).unwrap();
+    fs::write(storage.library_blob_path(&hash).unwrap(), raw).unwrap();
     fs::write(avatars.join(format!("{owner}.moon")), b"legacy source").unwrap();
     fs::create_dir_all(avatars.join("temp")).unwrap();
     fs::write(
@@ -41,11 +41,11 @@ fn relocates_wal_database_and_original_models_without_overwriting_new_data() {
     );
     assert_eq!(
         migrated.blob_path(&hash).unwrap().parent().unwrap(),
-        avatars.join("models")
+        avatars.join("wardrobe")
     );
     assert_eq!(fs::read(migrated.blob_path(&hash).unwrap()).unwrap(), raw);
     assert_eq!(
-        fs::read(avatars.join("models").join(format!("{owner}.moon"))).unwrap(),
+        fs::read(avatars.join("wardrobe").join(format!("{owner}.moon"))).unwrap(),
         b"legacy source"
     );
     assert_eq!(
@@ -62,7 +62,7 @@ fn relocates_wal_database_and_original_models_without_overwriting_new_data() {
     );
     assert_eq!(migrated.instance_id(), storage.instance_id());
     assert_eq!(
-        fs::read(storage.blob_path(&hash).unwrap()).unwrap(),
+        fs::read(storage.library_blob_path(&hash).unwrap()).unwrap(),
         raw,
         "migration retains the original files"
     );
@@ -70,13 +70,13 @@ fn relocates_wal_database_and_original_models_without_overwriting_new_data() {
     let temporary = avatars.join("upload").join(format!("{owner}.moon"));
     fs::remove_file(&temporary).unwrap();
     fs::write(
-        avatars.join("models").join(format!("{owner}.moon")),
+        avatars.join("wardrobe").join(format!("{owner}.moon")),
         b"new canonical model",
     )
     .unwrap();
     let reopened = Storage::open_avatars(&avatars, data.join("metadata.sqlite3")).unwrap();
     assert_eq!(
-        fs::read(avatars.join("models").join(format!("{owner}.moon"))).unwrap(),
+        fs::read(avatars.join("wardrobe").join(format!("{owner}.moon"))).unwrap(),
         b"new canonical model"
     );
     assert_eq!(reopened.instance_id(), storage.instance_id());
