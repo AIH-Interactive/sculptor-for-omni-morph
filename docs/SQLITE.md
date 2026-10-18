@@ -2,7 +2,7 @@
 
 alpha.2 模型库当前使用 `user_version=4`：在既有账号/装备/模型库数据基础上追加举报、申诉、
 衣柜来源屏蔽及资源版本展示设置。schema 3→4 在同一事务迁移，迁移前使用 SQLite backup
-生成 `metadata.pre-library-<随机值>.sqlite3`；不重写头像本体，不把私有装备展示默认值与衣柜默认值混用。
+生成 `metadata.pre-library-<随机值>.db`；不重写头像本体，不把私有装备展示默认值与衣柜默认值混用。
 旧版本不能直接打开新 schema；回退须配套恢复数据库与资源备份。合成库的迁移/重复打开、
 旧策略保留、未知版本拒绝与实际新旧进程保留检查已通过，生产恢复演练仍为 MANUAL/PENDING。
 
@@ -17,7 +17,7 @@ alpha.2 模型库当前使用 `user_version=4`：在既有账号/装备/模型�
 - `data/avatars/upload/<uuid>-<operation>.part`：所有引擎和上传入口共用的暂存区。
   接收完成后执行大小、包类型和哈希校验；失败或取消删除暂存，未完成上传重启后不能提交。
 - `data/avatars/models/<sha256>`：不可变模型本体，继续使用文件存储。
-- `data/metadata.sqlite3`：唯一持久业务元数据存储，WAL、FULL synchronous、外键检查、事务提交。
+- `data/metadata.db`：唯一持久业务元数据存储，WAL、FULL synchronous、外键检查、事务提交。
 - `users` / `upload_permissions`：UUID 资料、封禁、上传权限；真实认证令牌不持久化。
 - `owners` / `avatars` / `equipment`：UUID、模型 ID、revision、引擎类型、分发格式、内容摘要、
   文件长度、删除状态及主装备/兼容装备关联。引擎类型存数值，不按引擎复制存储流程。
@@ -28,8 +28,11 @@ alpha.2 模型库当前使用 `user_version=4`：在既有账号/装备/模型�
 
 ## 迁移
 
-默认目录为 `data/metadata.sqlite3`、`data/avatars/upload`、`data/avatars/models`。
-`AVATARS_FOLDER` 只改变 avatars 根目录，数据库仍相对于工作目录位于 `data/metadata.sqlite3`。
+默认目录为 `data/metadata.db`、`data/avatars/upload`、`data/avatars/models`。
+`AVATARS_FOLDER` 只改变 avatars 根目录，数据库仍相对于工作目录位于 `data/metadata.db`。
+首次升级到 `.db` 时，若目标不存在，优先从同目录的 `metadata.sqlite3` 使用 SQLite backup
+导入一致快照（包括已提交 WAL）；其次兼容旧 `cloud-v1/metadata.db` 或 `cloud-v1/metadata.sqlite3`。
+原库保留用于恢复；后续仅使用已存在的 `.db`，不会再被旧库覆盖。未知版本拒绝迁移，避免创建空库。
 停止旧服务后启动新版本，会复制旧 `cloud-v1/blobs`、根目录 UUID `.moon` 和 `temp` 中的模型；
 现有目标文件优先，原文件保留。旧数据库使用 SQLite backup 接口复制，包含已提交的 WAL 内容。
 文件复制和数据库打开成功后在 SQLite 记录迁移完成，后续启动不会重新导入已消费的临时文件。

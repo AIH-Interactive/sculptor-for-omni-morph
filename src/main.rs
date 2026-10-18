@@ -171,7 +171,7 @@ async fn app() -> Result<bool> {
     let storage = Arc::new(
         storage::Storage::open_avatars(
             PathBuf::from(&*AVATARS_VAR),
-            PathBuf::from("data/metadata.sqlite3"),
+            PathBuf::from("data/metadata.db"),
         )
         .map_err(|code| anyhow::anyhow!("Protocol storage startup failed: {code:?}"))?,
     );

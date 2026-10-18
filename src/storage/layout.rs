@@ -39,8 +39,16 @@ pub(super) fn migrate(avatars: &Path, database: &Path) -> Result<()> {
     copy_models(avatars, &models, false)?;
     copy_models(&avatars.join("temp"), &uploads, false)?;
 
-    let old_database = legacy.join("metadata.sqlite3");
-    if !database.exists() && old_database.is_file() {
+    // Prefer the previous canonical database over an older cloud-v1 copy.
+    // Explicit existing destinations remain authoritative on every later start.
+    let old_database = [
+        database.with_extension("sqlite3"),
+        legacy.join("metadata.db"),
+        legacy.join("metadata.sqlite3"),
+    ]
+    .into_iter()
+    .find(|path| path != database && path.is_file());
+    if let Some(old_database) = old_database.filter(|_| !database.exists()) {
         let parent = database.parent().ok_or(ErrorCode::Internal)?;
         fs::create_dir_all(parent).map_err(|_| ErrorCode::Internal)?;
         let source = rusqlite::Connection::open_with_flags(
@@ -55,7 +63,7 @@ pub(super) fn migrate(avatars: &Path, database: &Path) -> Result<()> {
             return Err(ErrorCode::UnsupportedVersion);
         }
         let staged = database.with_extension(format!(
-            "{}.migration.sqlite3",
+            "{}.migration.db",
             faster_hex::hex_string(&crate::utils::rand()[..8])
         ));
         // SQLite's backup reads a consistent snapshot, including committed WAL pages.

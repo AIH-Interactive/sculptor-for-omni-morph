@@ -10,8 +10,8 @@
 - `data/avatars/wardrobe/`：衣柜上传；新版资源按 SHA-256 命名，旧 Figura 上传为 `<UUID>.moon`。
 - `data/avatars/upload/`：上传中的临时文件。
 - `data/avatars/recycle/library/<模型UUID>/`：删除的模型库文件、封面及原状态快照。
-- `data/avatars/recycle/wardrobe/<玩家UUID>/<删除操作UUID>/`：衣柜删除的文件、各版本 AvatarDescriptor protobuf 和 metadata.json。衣柜记录供管理员手工恢复，不新增衣柜回收站页面。
-- `data/metadata.sqlite3`：模型库与玩家资源、权限、恢复状态等记录；备份和恢复需与文件目录一起处理。
+- `data/avatars/recycle/wardrobe/<玩家UUID>/<删除操作UUID>/`：衣柜删除的文件、各版本 AvatarDescriptor protobuf 和 metadata.json，供统一管理员回收站恢复或彻底删除。
+- `data/metadata.db`：模型库与玩家资源、权限、恢复状态等记录；备份和恢复需与文件目录一起处理。
 
 启动时将原 models 目录中的衣柜文件按数据库来源分离；同内容确实同时用于模型库和衣柜时保留两个副本。模型库列表始终读取发布记录，不扫描衣柜目录。升级至 SQLite schema 5 前沿用原备份机制；旧已删除模型补建回收记录，屏蔽状态按既有哈希屏蔽记录保守恢复。较旧后端不支持打开 schema 5，不应直接降级运行。
 
@@ -27,5 +27,18 @@
 自动检查增加真实 HTTP/生产路径测试，覆盖衣柜不入目录、同哈希双来源隔离、归档内容、权限/CAS、恢复、彻底删除、共享引用、屏蔽恢复、恢复旧操作重放和旧删除记录重启归档。原迁移测试更新为衣柜独立路径。完整 cargo test 和 cargo build 在前台通过 Tee 日志运行并核对退出码。跨语言/旧进程外部夹具未配置时仍按原测试明确 SKIPPED；worker saturation 仍按原策略单独运行。
 
 真实部署迁移、玩家游戏内上传/预览/删除/恢复效果：MANUAL/PENDING。
+
+## 统一回收站（客户端计划 R15）
+
+模型管理及衣柜管理隐藏已删除条目，统一回收站以紧凑表格显示两类来源，行内提供恢复和垃圾桶（彻底删除）。
+`GET /api/library/v1/admin/recycle?page=1&q=&type=&source=` 同时列出两类记录；
+`type` 为留空 / `FIGURA` / `YSM_PLAIN` / `YSM_ENCRYPTED`，`source` 为留空 / `LIBRARY` / `WARDROBE`。
+组合筛选在分页前应用，页面大小为 8，统计和分页一致。
+
+衣柜操作为 `POST /api/library/v1/admin/wardrobe-recycle/:owner/:archive/restore` 或 `/purge`，
+请求为 `{ "operation_id": "UUID", "expected_equipment_revision": 版本 }`；模型库操作沿用上文接口。
+恢复将原文件移回对应 `models` / `wardrobe` 目录，清理该回收站归档，条目重返原管理列表。
+衣柜恢复保留原版本的展示和屏蔽设置，拒绝覆盖玩家的新装备或新上传；彻底删除不会移除其他来源仍引用的文件。
+所有操作要求额外管理员会话，支持 CAS 和请求重放；预览不产生正式下载计数。
 
 私有装备展示设置：GET /api/library/v1/session 现在额外返回 equipment_model_id、equipment_model_revision、show_private_equipment，均只来自当前认证玩家的装备。屏蔽或非私有来源回读为 false。客户端沿用原 equip CAS 接口保存当前来源的展示意图，无需重新下载或替换本地模型。回归先证明旧 session 缺少状态，再验证保存后回读和其他账号隔离；完整 cargo test 为 94 passed、0 failed、1 ignored，cargo build 通过。

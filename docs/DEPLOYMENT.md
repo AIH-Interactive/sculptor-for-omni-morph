@@ -8,9 +8,9 @@
 
 模型库使用 `/api/library/v1` JSON 扩展，不改变 Protobuf v1。部署客户端目标版本为
 `1.0.0-alpha.2`，构建平台以客户端 `enabled_platforms=fabric` 为准。升级前停止服务，
-备份实际启动目录中的 `data/metadata.sqlite3`（包括存在的 WAL/SHM）、整个头像资源目录和配置。
-不要在运行服务时直接复制 SQLite 主文件。自动迁移前的 `pre-library-*.sqlite3` 是
-SQLite backup 快照（文件名形如 `metadata.pre-library-<随机值>.sqlite3`），不能替代完整资源和运营配置备份。
+备份实际启动目录中的 `data/metadata.db`（包括存在的 WAL/SHM）、整个头像资源目录和配置。
+不要在运行服务时直接复制 SQLite 主文件。自动迁移前的 `pre-library-*.db` 是
+SQLite backup 快照（文件名形如 `metadata.pre-library-<随机值>.db`），不能替代完整资源和运营配置备份。
 
 `[model_library]` 配置 `max_upload_bytes` 和 `categories`，客户端每次投稿重新获取限额。
 配置管理员使用 `[[model_library.admins]]` 的已认证玩家 UUID、玩家名及密码哈希。
@@ -112,7 +112,7 @@ limitations.maxAvatarSize 的单位是十进制 KB，示例值 100 较小；按�
 
 旧 owner.moon 保留原字节，首次查询对应 owner 时惰性补建 cloud-v1 索引和不可变 blob，
 不解密 YSM、不转换原文件。重复导入同一内容不增加资源 revision，也不覆盖已选 YSM。
-data/metadata.sqlite3 保存全部持久业务元数据：用户资料/封禁/上传权限、UUID 与模型版本关联、
+data/metadata.db 保存全部持久业务元数据：用户资料/封禁/上传权限、UUID 与模型版本关联、
 装备/兼容引用、删除 tombstone、幂等操作及 YSM 快照/水位/恢复尾部。SQLite user_version 当前为 4，
 未知版本拒绝启动，不猜测性改写。旧 schema_version=1 的 manifest.json 首次启动自动事务导入，
 保留原文件作为迁移来源；此后仅 SQLite 权威，不再双写旧 manifest。
@@ -124,9 +124,9 @@ Figura 历史 hash 是 SHA-256(Base64(raw))，与原始文件 hash 不同，不�
 进程在 COMMIT 前终止时，重新启动读取上一份已提交 SQLite 状态；不发布半成品。
 重启清理旧 upload/*.part，因为上传授权不跨进程保留；不可变但未被引用的 blob 保留，
 不在启动期间冒险清理历史数据。服务重启后客户端重新认证，旧会话不复用。
-备份时停止服务，完整备份 data/metadata.sqlite3 及其可能存在的 -wal/-shm、整个 AVATARS_FOLDER，不要只复制数据库主文件。
+备份时停止服务，完整备份 data/metadata.db 及其可能存在的 -wal/-shm、整个 AVATARS_FOLDER，不要只复制数据库主文件。
 旧布局首次启动自动复制到新目录并保留旧文件，SQLite backup 包含 WAL；细节见 [SQLITE.md](SQLITE.md)。
-AVATARS_FOLDER 自定义只改变模型/暂存根目录，SQLite 始终位于工作目录下的 data/metadata.sqlite3。
+AVATARS_FOLDER 自定义只改变模型/暂存根目录，SQLite 始终位于工作目录下的 data/metadata.db。
 旧系统从未持久化的账号名字无法凭空恢复；已知模型 owner UUID 会生成不带登录权限的资料，
 认证成功后补齐真实账号资料。上传令牌、连接、上传授权和临时请求状态仍只在内存中，不写入数据库。
 

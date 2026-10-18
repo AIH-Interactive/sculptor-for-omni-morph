@@ -294,9 +294,9 @@ model evidence. These checks belong to M4–M7 and do not block M0.
 ## M1 deployment and verification
 
 Before starting the new binary, stop the service and retain a complete backup
-of metadata.sqlite3 (including committed WAL via SQLite backup), model blobs
+of metadata.db (including committed WAL via SQLite backup), model blobs
 and configuration. Schema 1 upgrades to 2 with a uniquely named
-`metadata.pre-library-<random>.sqlite3` backup next to the database. The upgrade
+`metadata.pre-library-<random>.db` backup next to the database. The upgrade
 transaction creates library tables and advances user_version together. A failed
 DDL rolls back and leaves version 1 usable. Unknown versions above 2 fail startup
 before upload cleanup. Old binaries reject version 2: rollback requires restoring

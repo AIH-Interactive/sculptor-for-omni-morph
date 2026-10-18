@@ -20,7 +20,7 @@ pub(super) fn migrate(database: &mut Connection, path: &Path, version: u32) -> R
     if version > 0 {
         // Unique backup names preserve the first usable pre-upgrade snapshot on retry.
         let backup = path.with_extension(format!(
-            "pre-library-{}.sqlite3",
+            "pre-library-{}.db",
             faster_hex::hex_string(&crate::utils::rand()[..16])
         ));
         database.backup("main", &backup, None).map_err(sql_error)?;
