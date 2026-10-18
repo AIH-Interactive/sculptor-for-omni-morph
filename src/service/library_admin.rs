@@ -18,6 +18,7 @@ type Result<T> = std::result::Result<T, ErrorCode>;
 static KDF_WORKERS: LazyLock<Arc<Semaphore>> = LazyLock::new(|| Arc::new(Semaphore::new(2)));
 const ACCESS_SECONDS: u64 = 15 * 60;
 const REFRESH_SECONDS: u64 = 7 * 86400;
+pub const BUILTIN_CATEGORIES: [&str; 2] = ["full_model", "decorative_parts"];
 
 #[derive(Clone, Debug, PartialEq, Deserialize)]
 #[serde(try_from = "RawLibraryConfig")]
@@ -32,8 +33,15 @@ impl Default for LibraryConfig {
         Self {
             admins: Vec::new(),
             max_upload_bytes: 64 * 1024 * 1024,
-            categories: vec!["general".into()],
+            categories: Vec::new(),
         }
+    }
+}
+
+impl LibraryConfig {
+    pub fn effective_categories(&self) -> Vec<String> {
+        BUILTIN_CATEGORIES.iter().map(|id| (*id).to_owned())
+            .chain(self.categories.iter().cloned()).collect()
     }
 }
 
@@ -76,14 +84,14 @@ impl TryFrom<RawLibraryConfig> for LibraryConfig {
                 .map_err(|_| "invalid model library administrator password hash")?;
         }
         let max_upload_bytes = raw.max_upload_bytes.unwrap_or(64 * 1024 * 1024);
-        let categories = raw.categories.unwrap_or_else(|| vec!["general".into()]);
+        let categories = raw.categories.unwrap_or_default();
         let mut unique_categories = HashSet::new();
         if max_upload_bytes == 0
             || max_upload_bytes > 1024 * 1024 * 1024
-            || categories.is_empty()
-            || categories.len() > 32
+            || categories.len() > 30
             || categories.iter().any(|category| {
                 category.is_empty()
+                    || BUILTIN_CATEGORIES.contains(&category.as_str())
                     || category.len() > 32
                     || !category.bytes().all(|byte| {
                         byte.is_ascii_lowercase()

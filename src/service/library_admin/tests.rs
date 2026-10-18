@@ -403,3 +403,13 @@ fn removing_or_changing_config_permanently_revokes_old_sessions() {
         ));
     }
 }
+#[test]
+fn builtin_categories_are_always_present_and_config_only_adds_extras() {
+    let defaults: LibraryConfig = toml::from_str("").unwrap();
+    assert!(defaults.categories.is_empty());
+    assert_eq!(defaults.effective_categories(), ["full_model", "decorative_parts"]);
+    let extra: LibraryConfig = toml::from_str("categories = ['custom']").unwrap();
+    assert_eq!(extra.effective_categories(), ["full_model", "decorative_parts", "custom"]);
+    assert!(toml::from_str::<LibraryConfig>("categories = ['full_model']").is_err());
+    assert!(toml::from_str::<LibraryConfig>("categories = ['custom', 'custom']").is_err());
+}

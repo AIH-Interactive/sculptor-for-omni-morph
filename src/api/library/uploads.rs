@@ -33,7 +33,7 @@ pub async fn reserve(
         .ok_or(ErrorCode::Unauthenticated)?;
     let storage = state.storage.clone();
     let reservation =
-        blocking(move || storage.library_reserve(actor, &name, &input, &config.categories)).await?;
+        blocking(move || storage.library_reserve(actor, &name, &input, &config.effective_categories())).await?;
     let storage = state.storage.clone();
     let operation = reservation.request.operation_id.clone();
     let policy_revision = blocking(move || {

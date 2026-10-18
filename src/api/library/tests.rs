@@ -104,6 +104,8 @@ impl Server {
         let mut config: crate::state::Config =
             toml::from_str(include_str!("../../../Config.example.toml")).unwrap();
         config.limitations.can_upload = true;
+        // Synthetic fixtures also exercise one administrator-configured extra category.
+        config.model_library.categories = vec!["general".into()];
         let manager = Arc::new(crate::auth::UManager::open(storage.clone()).unwrap());
         for id in 1..=4 {
             manager

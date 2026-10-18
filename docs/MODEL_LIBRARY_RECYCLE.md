@@ -2,6 +2,8 @@
 
 对应客户端计划 R1，版本仍为 alpha.2。
 
+分类内置为 `full_model`（完整模型）及 `decorative_parts`（装饰部件）。配置文件默认 `categories = []`，仅可添加额外分类，不能移除、替换或重复声明内置分类。
+
 默认路径相对于后端工作目录；avatars 路径可由原环境变量覆盖：
 
 - `data/avatars/models/`：显式上传到模型库的模型包及自定义封面，SHA-256 文件名。
