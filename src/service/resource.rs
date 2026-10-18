@@ -452,21 +452,24 @@ async fn commit_upload_inner(
         state.storage.blob_path(&descriptor.raw_sha256)?
     };
     let inspection_path = source.clone();
-    let inspected = tokio::task::spawn_blocking(move || super::package::inspect(&inspection_path))
-        .await
-        .map_err(|_| ErrorCode::Internal)?
-        .and_then(|identity| {
-            if identity.model_type as i32 != descriptor.model_type
-                || identity
-                    .content_hash
-                    .as_ref()
-                    .is_some_and(|hash| *hash != descriptor.content_sha256)
-            {
-                Err(ErrorCode::InvalidMessage)
-            } else {
-                Ok(identity)
-            }
-        });
+    let max_nodes = state.config.read().await.limitations.max_package_nodes;
+    let inspected = tokio::task::spawn_blocking(move || {
+        super::package::inspect_upload(&inspection_path, max_nodes)
+    })
+    .await
+    .map_err(|_| ErrorCode::Internal)?
+    .and_then(|identity| {
+        if identity.model_type as i32 != descriptor.model_type
+            || identity
+                .content_hash
+                .as_ref()
+                .is_some_and(|hash| *hash != descriptor.content_sha256)
+        {
+            Err(ErrorCode::InvalidMessage)
+        } else {
+            Ok(identity)
+        }
+    });
     let inspected = match inspected {
         Ok(inspected) => inspected,
         Err(code) => {
@@ -586,9 +589,12 @@ pub async fn ensure_legacy_import(
     }
     let legacy_hash = legacy_file_hash(&snapshot.0).await?;
     let inspection_path = snapshot.0.clone();
-    let identity = tokio::task::spawn_blocking(move || super::package::inspect(&inspection_path))
-        .await
-        .map_err(|_| ErrorCode::Internal)??;
+    let max_nodes = state.config.read().await.limitations.max_package_nodes;
+    let identity = tokio::task::spawn_blocking(move || {
+        super::package::inspect_upload(&inspection_path, max_nodes)
+    })
+    .await
+    .map_err(|_| ErrorCode::Internal)??;
     let model_type = identity.model_type as i32;
     let _publication = state.storage.lock_blob_files()?;
     state.storage.publish_staged_locked(&snapshot.0, &hash, false)?;
@@ -647,6 +653,7 @@ pub async fn upload_legacy(state: &AppState, token: &str, body: axum::body::Body
     let config = state.config.read().await;
     let allowed = config.limitations.can_upload;
     let limit = config.limitations.max_avatar_size.saturating_mul(1000);
+    let max_nodes = config.limitations.max_package_nodes;
     drop(config);
     if !state.user_manager.upload_state(user.uuid, allowed) {
         return Err(ApiError::Forbidden);
@@ -684,7 +691,7 @@ pub async fn upload_legacy(state: &AppState, token: &str, body: axum::body::Body
         file.sync_all().await.map_err(internal_and_log)?;
         drop(file);
         let path = staging.0.clone();
-        tokio::task::spawn_blocking(move || super::package::inspect(&path))
+        tokio::task::spawn_blocking(move || super::package::inspect_upload(&path, max_nodes))
             .await
             .map_err(internal_and_log)?
             .map_err(legacy_error)?;
@@ -720,7 +727,8 @@ pub async fn write_legacy(
         .await
         .map_err(internal_and_log)?;
     let inspection = staging.0.clone();
-    tokio::task::spawn_blocking(move || super::package::inspect(&inspection))
+    let max_nodes = state.config.read().await.limitations.max_package_nodes;
+    tokio::task::spawn_blocking(move || super::package::inspect_upload(&inspection, max_nodes))
         .await
         .map_err(|_| ApiError::Internal)?
         .map_err(legacy_error)?;

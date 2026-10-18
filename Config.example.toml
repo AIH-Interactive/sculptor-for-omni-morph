@@ -73,6 +73,7 @@ customText = """
 
 ## Full update of these parameters occurs only after restarting the Sculptor!!!
 [limitations]
+maxPackageNodes = 262144 # NBT nodes checked on upload; -1 disables the node-count limit
 maxAvatarSize = 100 # KB
 maxAvatars = 10 # It doesn't look like Figura has any actions implemented with this?
 # P.S. And it doesn't look like the current API allows anything like that...

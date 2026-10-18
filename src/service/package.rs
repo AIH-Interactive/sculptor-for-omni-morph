@@ -13,7 +13,6 @@ use std::{
 const MAX_DECOMPRESSED: u64 = 256 * 1024 * 1024;
 const MAX_RESOURCE: u64 = 32 * 1024 * 1024;
 const MAX_CIPHERTEXT: u64 = 64 * 1024 * 1024;
-const MAX_NODES: usize = 262_144;
 
 type Result<T> = std::result::Result<T, ErrorCode>;
 
@@ -119,6 +118,41 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn large_model_is_not_rejected_by_a_read_time_node_quota() {
+        let (bytes, _) = large_node_fixture();
+        assert!(inspect_with_budget(bytes.as_slice(), MAX_DECOMPRESSED).is_ok());
+        assert!(inspect_with_limits(bytes.as_slice(), MAX_DECOMPRESSED, None).is_ok());
+        assert!(matches!(
+            inspect_with_limits(bytes.as_slice(), MAX_DECOMPRESSED, Some(262_144)),
+            Err(ErrorCode::LimitExceeded)
+        ));
+        assert!(matches!(
+            inspect_with_limits(bytes.as_slice(), 8, None),
+            Err(ErrorCode::LimitExceeded)
+        ));
+    }
+
+    pub(crate) fn large_node_fixture() -> (Vec<u8>, Vec<u8>) {
+        let (bytes, identity) = fixture(false, false);
+        let mut nbt = Vec::new();
+        GzDecoder::new(bytes.as_slice())
+            .read_to_end(&mut nbt)
+            .unwrap();
+        nbt.pop();
+        for index in 0..513 {
+            nbt.push(9);
+            text(&mut nbt, &format!("vertices_{index}"));
+            nbt.push(5);
+            nbt.extend_from_slice(&512i32.to_be_bytes());
+            nbt.extend_from_slice(&[0; 512 * 4]);
+        }
+        nbt.push(0);
+        let mut encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+        encoder.write_all(&nbt).unwrap();
+        (encoder.finish().unwrap(), identity)
+    }
+
+    #[test]
     fn inspect_container_without_decryption_and_enforce_budgets() {
         for encrypted in [false, true] {
             let (bytes, hash) = fixture(encrypted, false);
@@ -151,6 +185,7 @@ struct Scanner<R> {
     remaining: u64,
     started: Instant,
     nodes: usize,
+    max_nodes: Option<u64>,
     format: String,
     content_hash: Option<Vec<u8>>,
     ciphertext_hash: Option<Vec<u8>>,
@@ -168,12 +203,36 @@ pub fn inspect(path: &Path) -> Result<PackageIdentity> {
     )
 }
 
+/// Node quotas apply when admitting uploads. Reading accepted blobs must not
+/// silently impose the former fixed quota after an administrator disables it.
+pub fn inspect_upload(path: &Path, max_nodes: i64) -> Result<PackageIdentity> {
+    let max_nodes = match max_nodes {
+        -1 => None,
+        value if value >= 0 => Some(value as u64),
+        _ => return Err(ErrorCode::InvalidMessage),
+    };
+    inspect_with_limits(
+        File::open(path).map_err(|_| ErrorCode::Internal)?,
+        MAX_DECOMPRESSED,
+        max_nodes,
+    )
+}
+
 fn inspect_with_budget(source: impl Read, budget: u64) -> Result<PackageIdentity> {
+    inspect_with_limits(source, budget, None)
+}
+
+fn inspect_with_limits(
+    source: impl Read,
+    budget: u64,
+    max_nodes: Option<u64>,
+) -> Result<PackageIdentity> {
     let mut scanner = Scanner {
         source: GzDecoder::new(source),
         remaining: budget,
         started: Instant::now(),
         nodes: 0,
+        max_nodes,
         format: String::new(),
         content_hash: None,
         ciphertext_hash: None,
@@ -318,7 +377,10 @@ impl<R: Read> Scanner<R> {
         if depth > 64 {
             return Err(self.limit("nesting_depth"));
         }
-        if self.nodes > MAX_NODES {
+        if self
+            .max_nodes
+            .is_some_and(|limit| self.nodes as u64 > limit)
+        {
             return Err(self.limit("node_count"));
         }
         match kind {

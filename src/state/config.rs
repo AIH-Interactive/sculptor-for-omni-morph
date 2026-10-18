@@ -49,6 +49,22 @@ pub struct Limitations {
     pub max_avatar_size: u64,
     pub max_avatars: u64,
     pub can_upload: bool,
+    #[serde(default = "default_package_nodes", deserialize_with = "package_nodes")]
+    pub max_package_nodes: i64,
+}
+
+fn default_package_nodes() -> i64 {
+    262_144
+}
+
+fn package_nodes<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<i64, D::Error> {
+    let value = i64::deserialize(deserializer)?;
+    if value < -1 {
+        return Err(serde::de::Error::custom(
+            "maxPackageNodes must be -1 or nonnegative",
+        ));
+    }
+    Ok(value)
 }
 
 #[derive(Deserialize, Clone, Debug, PartialEq)]
@@ -141,6 +157,19 @@ fn configuration_error_summary(error: &toml::de::Error) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn package_node_limit_defaults_and_unlimited_setting() {
+        let base = "maxAvatarSize = 102400\nmaxAvatars = 100\ncanUpload = true\n";
+        let defaults: Limitations = toml::from_str(base).unwrap();
+        assert_eq!(defaults.max_package_nodes, 262_144);
+        for value in [-1, 0, 500_000] {
+            let settings: Limitations =
+                toml::from_str(&format!("{base}maxPackageNodes = {value}\n")).unwrap();
+            assert_eq!(settings.max_package_nodes, value);
+        }
+        assert!(toml::from_str::<Limitations>(&format!("{base}maxPackageNodes = -2\n")).is_err());
+    }
 
     #[test]
     fn configuration_error_does_not_disclose_input_or_deserializer_values() {

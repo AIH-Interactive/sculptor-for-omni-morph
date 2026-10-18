@@ -143,6 +143,96 @@ async fn retryable_inspection_limit_does_not_turn_commit_retry_into_not_found() 
 }
 
 #[tokio::test]
+async fn unlimited_node_upload_commits_and_remains_readable_after_refresh() {
+    use crate::protocol::v1::{AvatarDescriptor, CommitUpload, ErrorCode, UploadRequest};
+
+    let server = Server::start().await;
+    let owner = Uuid::from_u128(1);
+    let (bytes, content_hash) = crate::service::package::tests::large_node_fixture();
+    let operation = crate::service::resource::new_operation_id();
+    let request = UploadRequest {
+        operation_id: operation.clone(),
+        resource: Some(AvatarDescriptor {
+            asset_id: "avatar".into(),
+            model_type: 2,
+            distribution_format: 2,
+            raw_sha256: crate::storage::sha256(&bytes),
+            raw_length: bytes.len() as u64,
+            content_sha256: content_hash,
+            schema_sha256: vec![1; 32],
+            required_capabilities: vec![2],
+            ..Default::default()
+        }),
+    };
+    crate::service::resource::grant_upload(&server.state, owner, &request)
+        .await
+        .unwrap();
+    let operation_uuid = Uuid::parse_str(&operation).unwrap();
+    let mut writer =
+        crate::service::resource::begin_upload(&server.state, owner, operation_uuid).unwrap();
+    crate::service::resource::receive_upload(
+        &mut writer,
+        axum::body::Body::from(bytes.clone()),
+        || Ok(()),
+    )
+    .await
+    .unwrap();
+    drop(writer);
+    let commit = CommitUpload {
+        operation_id: operation,
+        raw_sha256: crate::storage::sha256(&bytes),
+        raw_length: bytes.len() as u64,
+    };
+    assert_eq!(
+        crate::service::resource::commit_upload(&server.state, owner, &commit).await,
+        Err(ErrorCode::LimitExceeded)
+    );
+    server
+        .state
+        .config
+        .write()
+        .await
+        .limitations
+        .max_package_nodes = -1;
+    let avatar = crate::service::resource::commit_upload(&server.state, owner, &commit)
+        .await
+        .unwrap();
+    assert_eq!(avatar.raw_sha256, crate::storage::sha256(&bytes));
+    // A subsequent read/classification must not restore the old fixed quota.
+    let identity = crate::service::package::inspect(
+        &server.state.storage.blob_path(&avatar.raw_sha256).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(identity.model_type as i32, avatar.model_type);
+
+    // Exercise the legacy HTTP adapter and first self-profile refresh with the same large container.
+    const PLAYER: u128 = 21_006;
+    upload(&server, PLAYER, &bytes).await;
+    let response = server
+        .client
+        .get(format!("{}/api/{}", server.base, Uuid::from_u128(PLAYER)))
+        .header("token", format!("synthetic-token-{PLAYER}"))
+        .header("x-omnimorph-models", "ysm")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 200);
+    assert_eq!(
+        response.json::<Value>().await.unwrap()["equipped"]
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
+    tokio::fs::remove_file(crate::service::resource::legacy_path(
+        Uuid::from_u128(PLAYER),
+        false,
+    ))
+    .await
+    .unwrap();
+}
+
+#[tokio::test]
 async fn wardrobe_upload_survives_first_self_refresh_without_a_temporary_model() {
     let server = Server::start().await;
     let packages = [
