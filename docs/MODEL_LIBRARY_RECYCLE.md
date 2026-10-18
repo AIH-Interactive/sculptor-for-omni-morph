@@ -27,3 +27,5 @@
 自动检查增加真实 HTTP/生产路径测试，覆盖衣柜不入目录、同哈希双来源隔离、归档内容、权限/CAS、恢复、彻底删除、共享引用、屏蔽恢复、恢复旧操作重放和旧删除记录重启归档。原迁移测试更新为衣柜独立路径。完整 cargo test 和 cargo build 在前台通过 Tee 日志运行并核对退出码。跨语言/旧进程外部夹具未配置时仍按原测试明确 SKIPPED；worker saturation 仍按原策略单独运行。
 
 真实部署迁移、玩家游戏内上传/预览/删除/恢复效果：MANUAL/PENDING。
+
+私有装备展示设置：GET /api/library/v1/session 现在额外返回 equipment_model_id、equipment_model_revision、show_private_equipment，均只来自当前认证玩家的装备。屏蔽或非私有来源回读为 false。客户端沿用原 equip CAS 接口保存当前来源的展示意图，无需重新下载或替换本地模型。回归先证明旧 session 缺少状态，再验证保存后回读和其他账号隔离；完整 cargo test 为 94 passed、0 failed、1 ignored，cargo build 通过。

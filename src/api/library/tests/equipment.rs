@@ -29,9 +29,21 @@ async fn session_exposes_only_the_authenticated_players_current_equipment_revisi
     );
     let equipped = read(1).send().await.unwrap().json::<Value>().await.unwrap();
     assert_eq!(equipped["equipment_revision"], 1);
+    assert_eq!(equipped["equipment_model_id"], id);
+    assert_eq!(equipped["equipment_model_revision"], 1);
+    assert_eq!(equipped["show_private_equipment"], false);
+    let mut visible = equip_input(1);
+    visible["show_private_equipment"] = json!(true);
+    assert_eq!(server.request(Method::POST, &path, 1).json(&visible)
+        .send().await.unwrap().status(), 200);
+    let saved = read(1).send().await.unwrap().json::<Value>().await.unwrap();
+    assert_eq!(saved["show_private_equipment"], true);
+    assert_eq!(saved["equipment_model_id"], id);
     let other = read(2).send().await.unwrap().json::<Value>().await.unwrap();
     assert_eq!(other["equipment_revision"], 0);
     assert_eq!(other["uuid"], Uuid::from_u128(2).to_string());
+    assert!(other["equipment_model_id"].is_null());
+    assert_eq!(other["show_private_equipment"], false);
     assert!(other.get("model_id").is_none());
     assert_eq!(
         server

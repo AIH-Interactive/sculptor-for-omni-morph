@@ -17,6 +17,34 @@ pub(crate) struct LibraryEquip {
 }
 
 impl Storage {
+    pub(crate) fn library_equipment_session(&self, owner: Uuid) -> Result<serde_json::Value> {
+        self.library_read(|database| {
+            let state = database.query_row(
+                "SELECT o.revision, b.source_model_id, b.source_revision,
+                 CASE WHEN m.moderation_status = 'ACTIVE' AND m.visibility = 'PRIVATE'
+                 THEN COALESCE(s.show_private_equipment, 0) ELSE 0 END
+                 FROM owners o LEFT JOIN equipment e ON e.owner_uuid = o.uuid AND e.slot = 'primary'
+                 LEFT JOIN library_resource_bindings b ON b.resource_owner = e.owner_uuid
+                   AND b.asset_id = e.asset_id AND b.revision = e.revision
+                 LEFT JOIN library_equipment_settings s ON s.resource_owner = e.owner_uuid
+                   AND s.asset_id = e.asset_id AND s.revision = e.revision
+                 LEFT JOIN library_effective_models m ON m.model_id = b.source_model_id
+                 WHERE o.uuid = ?1", [owner.to_string()], |row| {
+                    Ok(serde_json::json!({
+                        "equipment_revision": row.get::<_, i64>(0)?,
+                        "equipment_model_id": row.get::<_, Option<String>>(1)?,
+                        "equipment_model_revision": row.get::<_, Option<i64>>(2)?,
+                        "show_private_equipment": row.get::<_, bool>(3)?,
+                    }))
+                },
+            ).optional().map_err(sql_error)?;
+            Ok(state.unwrap_or_else(|| serde_json::json!({
+                "equipment_revision": 0, "equipment_model_id": null,
+                "equipment_model_revision": null, "show_private_equipment": false,
+            })))
+        })
+    }
+
     pub(crate) fn library_equip(
         &self,
         actor: Actor,
