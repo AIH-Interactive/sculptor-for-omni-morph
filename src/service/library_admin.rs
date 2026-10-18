@@ -57,11 +57,15 @@ impl TryFrom<RawLibraryConfig> for LibraryConfig {
         for admin in &raw.admins {
             if admin.uuid.is_nil()
                 || admin.player_name.is_empty()
-                || admin.player_name.len() > 16
+                || admin.player_name.chars().count() > 16
                 || !admin
                     .player_name
-                    .bytes()
-                    .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
+                    .chars()
+                    .all(|character| {
+                        character.is_ascii_alphanumeric()
+                            || character == '_'
+                            || ('\u{0080}'..='\u{d7ff}').contains(&character)
+                    })
             {
                 return Err("invalid model library administrator identity");
             }

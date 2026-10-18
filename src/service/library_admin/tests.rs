@@ -1,3 +1,5 @@
+\\?\D:\UserData\Desktop\Project\Figura\omnm-cloud\src\service\library_admin\tests.rs:
+
 use super::*;
 
 // Synthetic test-only password/salt; independently derived with Python hashlib.
@@ -9,6 +11,48 @@ fn admin() -> AdminConfig {
         uuid: Uuid::from_u128(4),
         password_hash: format!("pbkdf2-sha256$v1$600000$000102030405060708090a0b0c0d0e0f${KEY}"),
     }
+}
+
+#[test]
+fn unicode_administrator_config_accepts_simple_uuid() {
+    for name in [
+        "ExampleAdmin",
+        "测",
+        "测试管理员AE3803",
+        "中文、名字",
+        "e\u{0301}",
+        "name\u{200b}",
+        "\u{0080}",
+        "\u{d7ff}",
+    ] {
+        for uuid in [admin().uuid.to_string(), admin().uuid.simple().to_string()] {
+            let mut candidate = admin();
+            candidate.player_name = name.into();
+            let parsed_uuid: Uuid = uuid.parse().unwrap();
+            assert_eq!(parsed_uuid, candidate.uuid);
+            let result = LibraryConfig::try_from(RawLibraryConfig {
+                admins: vec![candidate],
+                ..Default::default()
+            });
+            assert!(result.is_ok(), "rejected name {name} with UUID {uuid}");
+        }
+    }
+    let configured = format!(
+        "{}\n[[model_library.admins]]\nplayer_name = \"测试管理员AE3803\"\nuuid = \"{}\"\npassword_hash = \"{}\"\n",
+        include_str!("../../../Config.example.toml"),
+        admin().uuid.simple(),
+        admin().password_hash
+    );
+    let config: crate::state::Config = toml::from_str(&configured).unwrap();
+    assert_eq!(
+        config.model_library.admins[0].player_name,
+        "测试管理员AE3803"
+    );
+    assert_eq!(config.model_library.admins[0].uuid, admin().uuid);
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("Config.toml");
+    std::fs::write(&path, configured).unwrap();
+    assert_eq!(crate::state::Config::parse(path), config);
 }
 
 #[tokio::test]
@@ -55,6 +99,71 @@ async fn password_vector_and_wrong_identity_password_and_budgets() {
     let display = format!("{admin:?}");
     assert!(!display.contains(KEY));
     assert!(!display.contains("pbkdf2"));
+
+    let mut unicode = admin.clone();
+    unicode.player_name = "测试管理员AE3803".into();
+    unicode
+        .verify_password(
+            unicode.uuid,
+            "测试管理员ae3803",
+            "synthetic-test-password".into(),
+        )
+        .await
+        .unwrap();
+    for (uuid, name) in [
+        (Uuid::from_u128(5), "测试管理员AE3803"),
+        (unicode.uuid, "其他管理员AE3803"),
+    ] {
+        assert_eq!(
+            unicode
+                .verify_password(uuid, name, "synthetic-test-password".into())
+                .await,
+            Err(ErrorCode::Forbidden)
+        );
+    }
+}
+
+#[test]
+fn administrator_names_enforce_character_budget_and_configured_range() {
+    for name in [
+        "",
+        " name",
+        "name ",
+        "two names",
+        "name\n",
+        "name\0",
+        "name\u{007f}",
+        "name\u{e000}",
+        "name\u{1f600}",
+        "name-name",
+        "name.name",
+        "名字名字名字名字名字名字名字名字名",
+    ] {
+        let mut candidate = admin();
+        candidate.player_name = name.into();
+        assert!(
+            LibraryConfig::try_from(RawLibraryConfig {
+                admins: vec![candidate],
+                ..Default::default()
+            })
+            .is_err(),
+            "accepted invalid name {name:?}"
+        );
+    }
+    let mut candidate = admin();
+    candidate.player_name = "名".repeat(16);
+    assert!(LibraryConfig::try_from(RawLibraryConfig {
+        admins: vec![candidate.clone()],
+        ..Default::default()
+    })
+    .is_ok());
+    let mut duplicate = candidate.clone();
+    duplicate.uuid = Uuid::from_u128(5);
+    assert!(LibraryConfig::try_from(RawLibraryConfig {
+        admins: vec![candidate, duplicate],
+        ..Default::default()
+    })
+    .is_err());
 }
 
 #[test]

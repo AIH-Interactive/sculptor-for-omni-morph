@@ -88,7 +88,10 @@ impl Config {
         let mut data = String::new();
         file.read_to_string(&mut data).unwrap();
 
-        toml::from_str(&data).unwrap_or_else(|err| {tracing::error!("{err:#?}"); panic!("Panic occured! See log messages!")})
+        toml::from_str(&data).unwrap_or_else(|error| {
+            tracing::error!("{}", configuration_error_summary(&error));
+            panic!("Invalid configuration; see log messages for details")
+        })
     }
 
     pub fn verify_token(&self, suspicious: &str) -> crate::ApiResult<()> {
@@ -107,6 +110,50 @@ impl Config {
                 warn!("Unknown tryed to use admin functions, but token is not defined!");
                 Err(ApiError::BadRequest)
             },
+        }
+    }
+}
+
+fn configuration_error_summary(error: &toml::de::Error) -> String {
+    // Both Debug/Display and arbitrary deserializer messages can contain secrets.
+    // Only retain validation messages that we define as fixed strings ourselves.
+    let reason = match error.message() {
+        "invalid model library administrator identity" => {
+            "invalid model library administrator identity"
+        }
+        "duplicate model library administrator identity" => {
+            "duplicate model library administrator identity"
+        }
+        "invalid model library administrator password hash" => {
+            "invalid model library administrator password hash"
+        }
+        _ => "invalid TOML syntax or configuration value",
+    };
+    match error.span() {
+        Some(span) => format!(
+            "Invalid configuration at bytes {}..{}: {reason}",
+            span.start, span.end
+        ),
+        None => format!("Invalid configuration: {reason}"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn configuration_error_does_not_disclose_input_or_deserializer_values() {
+        for input in [
+            "token = [\"synthetic-config-secret\"]\n",
+            "token = \"synthetic-config-secret\"\ninvalid = [",
+        ] {
+            let error = toml::from_str::<Config>(input).unwrap_err();
+            let summary = configuration_error_summary(&error);
+            assert!(summary.contains("Invalid configuration"));
+            assert!(summary.contains("at bytes"));
+            assert!(!summary.contains("synthetic-config-secret"));
+            assert!(!summary.contains("token"));
         }
     }
 }

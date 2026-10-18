@@ -238,6 +238,14 @@ constant-time verification in a bounded blocking worker; passwords 1–1024 UTF-
 bytes, no password in process arguments/logging. Offline tool uses masked stdin.
 Test-only fixed salts/passwords are labeled synthetic.
 
+Administrator `player_name` uses `[A-Za-z0-9_\u0080-\uD7FF]{1,16}`,
+counted as Unicode scalar values rather than UTF-8 bytes. Chinese names from
+custom authentication providers are supported. ASCII letters remain
+case-insensitive; other characters must match exactly. UUIDs accept both the
+hyphenated and 32-hex forms; UUID and password checks remain mandatory.
+Configuration parse failures log a safe reason and byte range without dumping
+configuration contents or arbitrary deserializer values.
+
 Admin access expires in 15 minutes, remembered refresh in 7 days; random
 256-bit credentials are stored hashed on the server, bound to verified player,
 server instance/origin and configuration fingerprint. Refresh is single-use;
