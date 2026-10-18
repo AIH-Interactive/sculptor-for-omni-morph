@@ -1,5 +1,16 @@
 use super::*;
 
+#[test]
+fn preview_cache_duration_defaults_and_explicit_values_are_preserved() {
+    let defaults: LibraryConfig = toml::from_str("").unwrap();
+    assert_eq!(defaults.preview_cache_seconds, 3600);
+    let custom: LibraryConfig = toml::from_str("preview_cache_seconds = 7200").unwrap();
+    assert_eq!(custom.preview_cache_seconds, 7200);
+    let disabled: LibraryConfig = toml::from_str("preview_cache_seconds = 0").unwrap();
+    assert_eq!(disabled.preview_cache_seconds, 0);
+    assert!(toml::from_str::<LibraryConfig>("preview_cache_seconds = -1").is_err());
+}
+
 // Synthetic test-only password/salt; independently derived with Python hashlib.
 const KEY: &str = "055bcd61a2939b3846e10d4f9ebdf02be6610f5f894fd7882e985b9f87b81cff";
 

@@ -25,6 +25,7 @@ pub const BUILTIN_CATEGORIES: [&str; 2] = ["full_model", "decorative_parts"];
 pub struct LibraryConfig {
     pub admins: Vec<AdminConfig>,
     pub max_upload_bytes: u64,
+    pub preview_cache_seconds: u32,
     pub categories: Vec<String>,
 }
 
@@ -33,6 +34,7 @@ impl Default for LibraryConfig {
         Self {
             admins: Vec::new(),
             max_upload_bytes: 64 * 1024 * 1024,
+            preview_cache_seconds: 3600,
             categories: Vec::new(),
         }
     }
@@ -52,6 +54,8 @@ struct RawLibraryConfig {
     admins: Vec<AdminConfig>,
     #[serde(default)]
     max_upload_bytes: Option<u64>,
+    #[serde(default)]
+    preview_cache_seconds: Option<u32>,
     #[serde(default)]
     categories: Option<Vec<String>>,
 }
@@ -106,6 +110,7 @@ impl TryFrom<RawLibraryConfig> for LibraryConfig {
         Ok(Self {
             admins: raw.admins,
             max_upload_bytes,
+            preview_cache_seconds: raw.preview_cache_seconds.unwrap_or(3600),
             categories,
         })
     }

@@ -397,6 +397,14 @@ async fn dispatch(
     response
         .headers_mut()
         .insert("cache-control", "no-store".parse().expect("literal header"));
+    let preview_cache_seconds = state.config.read().await.model_library.preview_cache_seconds;
+    response.headers_mut().insert(
+        "x-omnimorph-preview-cache-seconds",
+        preview_cache_seconds
+            .to_string()
+            .parse()
+            .expect("numeric cache duration"),
+    );
     let request_id = response
         .headers()
         .get("x-request-id")

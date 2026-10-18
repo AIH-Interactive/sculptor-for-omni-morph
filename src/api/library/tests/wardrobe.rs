@@ -106,6 +106,33 @@ async fn administrator_preview_is_source_bound_and_does_not_expose_blocked_wardr
             .as_ref(),
         bytes.as_slice()
     );
+    let head = request(Method::HEAD, &path).send().await.unwrap();
+    assert_eq!(head.status(), 200);
+    assert_eq!(head.headers()["x-omnimorph-preview-cache-seconds"], "3600");
+    assert_eq!(
+        head.headers()["x-omnimorph-sha256"],
+        faster_hex::hex_string(&crate::storage::sha256(&bytes))
+    );
+    assert!(head.bytes().await.unwrap().is_empty());
+    server
+        .state
+        .config
+        .write()
+        .await
+        .model_library
+        .preview_cache_seconds = 15;
+    let capabilities = request(Method::GET, "/api/library/v1/capabilities")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        capabilities.headers()["x-omnimorph-preview-cache-seconds"],
+        "15"
+    );
+    assert_eq!(
+        capabilities.json::<Value>().await.unwrap()["preview_cache_seconds"],
+        15
+    );
     let stale = path.replace("equipment_revision=1", "equipment_revision=999999");
     assert_ne!(stale, path);
     assert_eq!(
