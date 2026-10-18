@@ -214,7 +214,7 @@ async fn administrator_uuid_origin_password_config_and_login_rate_are_enforced()
 }
 
 #[tokio::test]
-async fn block_hides_from_uploader_and_unblock_keeps_private_with_persistent_hashes() {
+async fn block_stays_in_mine_and_unblock_keeps_private_with_persistent_hashes() {
     let _serial = ADMIN_TESTS.lock().await;
     let server = Server::start().await;
     configure(&server).await;
@@ -262,7 +262,31 @@ async fn block_hides_from_uploader_and_unblock_keeps_private_with_persistent_has
         .json::<Value>()
         .await
         .unwrap();
-    assert_eq!(list["total"], 0);
+    assert_eq!(list["total"], 1);
+    assert_eq!(list["items"][0]["model_id"], model);
+    assert_eq!(list["items"][0]["moderation_status"], "BLOCKED");
+    assert_eq!(list["items"][0]["visibility"], "PRIVATE");
+    assert!(list["items"][0]["allowed_actions"]
+        .as_array()
+        .unwrap()
+        .is_empty());
+    let blocked = request(
+        &server,
+        Method::GET,
+        "/api/library/v1/models?scope=admin&status=BLOCKED",
+    )
+    .header("x-omnimorph-admin", token)
+    .send()
+    .await
+    .unwrap()
+    .json::<Value>()
+    .await
+    .unwrap();
+    assert_eq!(blocked["items"][0]["moderation_status"], "BLOCKED");
+    assert!(blocked["items"][0]["allowed_actions"]
+        .as_array()
+        .unwrap()
+        .contains(&json!("moderate")));
     assert!(
         server
             .state
@@ -273,7 +297,8 @@ async fn block_hides_from_uploader_and_unblock_keeps_private_with_persistent_has
             )
             .unwrap()
     );
-    let unblock = json!({"operation_id": library::random_id(), "expected_revision": 3});
+    let unblock = json!({"operation_id": library::random_id(),
+        "expected_revision": blocked["items"][0]["policy_revision"]});
     assert_eq!(
         request(&server, Method::DELETE, &path)
             .header("x-omnimorph-admin", token)
@@ -294,6 +319,16 @@ async fn block_hides_from_uploader_and_unblock_keeps_private_with_persistent_has
         .unwrap();
     assert_eq!(detail["visibility"], "PRIVATE");
     assert_eq!(detail["moderation_status"], "ACTIVE");
+    let mine = server
+        .request(Method::GET, "/api/library/v1/models?scope=mine", 1)
+        .send()
+        .await
+        .unwrap()
+        .json::<Value>()
+        .await
+        .unwrap();
+    assert_eq!(mine["items"][0]["moderation_status"], "ACTIVE");
+    assert_eq!(mine["items"][0]["visibility"], "PRIVATE");
 }
 
 #[tokio::test]
@@ -356,7 +391,17 @@ async fn a_hash_ban_hides_existing_catalog_copies_and_revokes_their_transfers() 
             .json::<Value>()
             .await
             .unwrap();
-        assert_eq!(response["total"], 0);
+        assert_eq!(response["total"], if scope == "mine" { 2 } else { 0 });
+        if scope == "mine" {
+            for item in response["items"].as_array().unwrap() {
+                assert_eq!(item["moderation_status"], "BLOCKED");
+                assert_eq!(item["visibility"], "PRIVATE");
+                assert!(item["allowed_actions"]
+                    .as_array()
+                    .unwrap()
+                    .is_empty());
+            }
+        }
     }
     let blocked = request(
         &server,

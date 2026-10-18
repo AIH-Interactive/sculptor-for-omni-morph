@@ -55,14 +55,16 @@ unknown identity/moderation fields in ordinary DTOs are rejected.
 
 An administrator below means a configured, UUID-bound player with an active
 password-authenticated admin session, explicitly accessing admin context.
-Ordinary scopes never expose blocked records, even to their uploader.
+The mine scope includes the uploader's blocked records with moderation_status=BLOCKED
+and no ordinary model actions. Public and favorites scopes still hide them.
+All model list summaries include moderation_status, matching the detail response.
 
 | State | Ordinary metadata/list/image | Complete preview/download/equip |
 | --- | --- | --- |
 | ACTIVE PUBLIC, no authorization | All authenticated players | All authenticated players |
 | ACTIVE PUBLIC, authorization | All authenticated players | Uploader, granted UUID, administrator |
 | ACTIVE PRIVATE, either authorization flag | Uploader only | Uploader only; administrator in admin context |
-| BLOCKED (forced PRIVATE) | Nobody in ordinary scopes | Administrator in admin context only |
+| BLOCKED (forced PRIVATE) | Uploader's mine list only; ordinary detail/image remain unavailable | Administrator in admin context only |
 | DELETED | Administrator audit/management context only | Nobody; no new transfer/equip |
 
 Private always overrides grants. Admin management may inspect active private
@@ -534,8 +536,9 @@ resource, equipment, policy or record revisions are checked in the transaction.
 | POST `/api/library/v1/admin/appeals/{id}/resolve` | operation_id, expected_revision, response (1–512 UTF-8 bytes); records response without unblocking |
 | POST `/api/library/v1/admin/appeals/{id}/unblock` | operation_id, expected_revision; explicit independent removal of that source ban, keeps catalog PRIVATE and does not equip; other active source bans still apply |
 
-Ordinary catalogs/details still hide BLOCKED models from uploaders. The appeal
-target route is the narrow uploader-only exception for moderation review. It
+Public/favorites catalogs and ordinary details still hide BLOCKED models.
+The uploader's mine list exposes only its own blocked summaries. The appeal
+target route additionally identifies targets for moderation review. It
 may identify the originating sanction for the uploader's verified wardrobe
 copy without returning another uploader's private model name or cover.
 Wardrobe visibility defaults true; library-private equipment intent defaults

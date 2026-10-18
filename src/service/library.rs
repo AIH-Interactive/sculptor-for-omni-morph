@@ -170,6 +170,7 @@ pub struct Summary {
     pub visibility: Visibility,
     pub requires_authorization: bool,
     pub allowed_actions: Vec<&'static str>,
+    pub moderation_status: String,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -240,6 +241,7 @@ fn model_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Model> {
             favorited: row.get(19)?,
             visibility: policy.visibility,
             requires_authorization: policy.requires_authorization,
+            moderation_status: moderation.clone(),
             allowed_actions: Vec::new(),
         },
         policy,
@@ -397,7 +399,8 @@ impl Storage {
         let tags = serde_json::to_string(&tags).map_err(|_| ErrorCode::Internal)?;
         let predicate = r"m.published = 1
             AND NOT EXISTS(SELECT 1 FROM library_recycle r WHERE r.model_id = m.model_id AND r.purged = 1)
-            AND (:admin OR (m.moderation_status = 'ACTIVE' AND (m.visibility = 'PUBLIC' OR m.uploader_uuid = :actor)))
+            AND (:admin OR (m.moderation_status = 'ACTIVE' AND (m.visibility = 'PUBLIC' OR m.uploader_uuid = :actor))
+                OR (:scope = 'mine' AND m.uploader_uuid = :actor AND m.moderation_status = 'BLOCKED'))
             AND (:scope != 'public' OR m.visibility = 'PUBLIC')
             AND (:scope != 'mine' OR m.uploader_uuid = :actor)
             AND (:scope != 'favorites' OR EXISTS(SELECT 1 FROM library_favorites f WHERE f.model_id = m.model_id AND f.player_uuid = :actor))

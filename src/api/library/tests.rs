@@ -578,7 +578,7 @@ async fn authenticated_lists_and_totals_apply_identical_policy_and_pending_rules
     );
     for (player, scope, expected) in [
         (1, "public", 1),
-        (1, "mine", 2),
+        (1, "mine", 3),
         (2, "public", 1),
         (2, "mine", 0),
     ] {

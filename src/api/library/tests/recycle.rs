@@ -461,6 +461,19 @@ async fn unified_recycle_hides_deleted_sources_and_moves_or_purges_only_their_fi
         .unwrap();
     assert_eq!(models["total"], 1);
     assert_eq!(models["items"][0]["model_id"], live);
+    let deleted_models: Value = request(
+        Method::GET,
+        "/api/library/v1/models?scope=admin&status=DELETED",
+    )
+    .send()
+    .await
+    .unwrap()
+    .json()
+    .await
+    .unwrap();
+    assert_eq!(deleted_models["total"], 1);
+    assert_eq!(deleted_models["items"][0]["model_id"], deleted);
+    assert_eq!(deleted_models["items"][0]["moderation_status"], "DELETED");
     let wardrobe: Value = request(Method::GET, "/api/library/v1/admin/wardrobe")
         .send()
         .await
