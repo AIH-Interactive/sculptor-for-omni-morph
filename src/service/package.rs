@@ -241,9 +241,22 @@ fn inspect_with_budget(source: impl Read, budget: u64) -> Result<PackageIdentity
 }
 
 impl<R: Read> Scanner<R> {
+    fn limit(&self, reason: &'static str) -> ErrorCode {
+        tracing::warn!(
+            limit = reason,
+            nodes = self.nodes,
+            elapsed_ms = self.started.elapsed().as_millis() as u64,
+            "Model package inspection limit exceeded"
+        );
+        ErrorCode::LimitExceeded
+    }
+
     fn read(&mut self, bytes: &mut [u8]) -> Result<()> {
-        if bytes.len() as u64 > self.remaining || self.started.elapsed() > Duration::from_secs(10) {
-            return Err(ErrorCode::LimitExceeded);
+        if bytes.len() as u64 > self.remaining {
+            return Err(self.limit("decompressed_bytes"));
+        }
+        if self.started.elapsed() > Duration::from_secs(10) {
+            return Err(self.limit("inspection_time"));
         }
         self.remaining -= bytes.len() as u64;
         self.source
@@ -276,7 +289,7 @@ impl<R: Read> Scanner<R> {
 
     fn skip(&mut self, mut length: u64, hash: bool) -> Result<Option<Vec<u8>>> {
         if length > self.remaining {
-            return Err(ErrorCode::LimitExceeded);
+            return Err(self.limit("decompressed_bytes"));
         }
         let mut digest = ring::digest::Context::new(&ring::digest::SHA256);
         let mut buffer = [0; 8192];
@@ -302,8 +315,11 @@ impl<R: Read> Scanner<R> {
 
     fn value(&mut self, kind: u8, path: &str, depth: usize) -> Result<()> {
         self.nodes += 1;
-        if depth > 64 || self.nodes > MAX_NODES {
-            return Err(ErrorCode::LimitExceeded);
+        if depth > 64 {
+            return Err(self.limit("nesting_depth"));
+        }
+        if self.nodes > MAX_NODES {
+            return Err(self.limit("node_count"));
         }
         match kind {
             1 => {
@@ -343,7 +359,7 @@ impl<R: Read> Scanner<R> {
                         MAX_RESOURCE
                     }
                 {
-                    return Err(ErrorCode::LimitExceeded);
+                    return Err(self.limit("resource_bytes"));
                 }
                 if ciphertext {
                     if kind != 7 || length == 0 {
@@ -379,7 +395,7 @@ impl<R: Read> Scanner<R> {
                 let element = self.byte()?;
                 let length = self.length()?;
                 if length > 4096 || (length > 0 && element == 0) {
-                    return Err(ErrorCode::LimitExceeded);
+                    return Err(self.limit("list_entries"));
                 }
                 for _ in 0..length {
                     self.value(element, path, depth + 1)?;

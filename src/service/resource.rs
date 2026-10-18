@@ -470,12 +470,16 @@ async fn commit_upload_inner(
     let inspected = match inspected {
         Ok(inspected) => inspected,
         Err(code) => {
-            state
-                .transfers
-                .pending
-                .lock()
-                .map_err(|_| ErrorCode::Internal)?
-                .remove(&(owner, operation));
+            // LIMIT_EXCEEDED is retryable on the wire. Retain its uploaded body under
+            // the existing grant expiry/concurrency bounds so the next commit can retry.
+            if code != ErrorCode::LimitExceeded {
+                state
+                    .transfers
+                    .pending
+                    .lock()
+                    .map_err(|_| ErrorCode::Internal)?
+                    .remove(&(owner, operation));
+            }
             return Err(code);
         }
     };

@@ -61,6 +61,88 @@ async fn avatar(server: &Server, owner: u128, observer: u128) -> reqwest::Respon
 }
 
 #[tokio::test]
+async fn retryable_inspection_limit_does_not_turn_commit_retry_into_not_found() {
+    use crate::protocol::v1::{AvatarDescriptor, CommitUpload, ErrorCode, UploadRequest};
+
+    let server = Server::start().await;
+    let owner = Uuid::from_u128(1);
+    let (bytes, _) = crate::service::package::tests::fixture(false, false);
+    let mut nbt = Vec::new();
+    flate2::read::GzDecoder::new(bytes.as_slice())
+        .read_to_end(&mut nbt)
+        .unwrap();
+    nbt.pop(); // Append a valid NBT list at the root that exceeds the inspection list budget.
+    nbt.push(9);
+    nbt.extend_from_slice(&4u16.to_be_bytes());
+    nbt.extend_from_slice(b"list");
+    nbt.push(1);
+    nbt.extend_from_slice(&4097i32.to_be_bytes());
+    nbt.extend_from_slice(&[0; 4097]);
+    nbt.push(0);
+    let mut encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+    encoder.write_all(&nbt).unwrap();
+    let bytes = encoder.finish().unwrap();
+    let operation = crate::service::resource::new_operation_id();
+    let request = UploadRequest {
+        operation_id: operation.clone(),
+        resource: Some(AvatarDescriptor {
+            asset_id: "avatar".into(),
+            model_type: 2,
+            distribution_format: 2,
+            raw_sha256: crate::storage::sha256(&bytes),
+            raw_length: bytes.len() as u64,
+            content_sha256: crate::service::package::tests::fixture(false, false).1,
+            schema_sha256: vec![1; 32],
+            required_capabilities: vec![2],
+            ..Default::default()
+        }),
+    };
+    crate::service::resource::grant_upload(&server.state, owner, &request)
+        .await
+        .unwrap();
+    let operation_uuid = Uuid::parse_str(&operation).unwrap();
+    let mut writer =
+        crate::service::resource::begin_upload(&server.state, owner, operation_uuid).unwrap();
+    crate::service::resource::receive_upload(
+        &mut writer,
+        axum::body::Body::from(bytes.clone()),
+        || Ok(()),
+    )
+    .await
+    .unwrap();
+    drop(writer);
+    let commit = CommitUpload {
+        operation_id: operation,
+        raw_sha256: crate::storage::sha256(&bytes),
+        raw_length: bytes.len() as u64,
+    };
+    for attempt in 1..=2 {
+        assert_eq!(
+            crate::service::resource::commit_upload(&server.state, owner, &commit).await,
+            Err(ErrorCode::LimitExceeded),
+            "retryable inspection failure must retain the upload on commit attempt {attempt}"
+        );
+    }
+    let path = server.state.storage.upload_path(owner, operation_uuid);
+    assert!(
+        path.exists(),
+        "retryable failure preserves the uploaded bytes"
+    );
+    assert!(server
+        .state
+        .storage
+        .equipped(owner)
+        .unwrap()
+        .primary
+        .is_none());
+    crate::service::resource::cancel_upload(&server.state, owner, operation_uuid).unwrap();
+    assert!(
+        !path.exists(),
+        "explicit cancellation still releases the retained upload"
+    );
+}
+
+#[tokio::test]
 async fn wardrobe_upload_survives_first_self_refresh_without_a_temporary_model() {
     let server = Server::start().await;
     let packages = [
