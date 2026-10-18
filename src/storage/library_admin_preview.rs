@@ -5,7 +5,6 @@ use crate::service::library_policy::Actor;
 #[derive(Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct PreviewQuery {
-    pub owner: Option<Uuid>,
     pub asset_id: Option<String>,
     pub asset_revision: Option<u64>,
     pub equipment_revision: Option<u64>,
@@ -21,10 +20,6 @@ impl Storage {
     ) -> Result<AvatarDescriptor> {
         if !actor.admin_context {
             return Err(ErrorCode::Forbidden);
-        }
-        if kind == "RECYCLE" {
-            let owner = query.owner.ok_or(ErrorCode::InvalidMessage)?;
-            return self.wardrobe_recycle_source(actor, owner, id).map(|(avatar, _)| avatar);
         }
         let (owner, asset, revision) = match kind {
             "CURRENT" => {
