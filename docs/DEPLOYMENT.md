@@ -4,6 +4,33 @@
 客户端默认 Protobuf；本后端同时提供 Figura Cloud 旧接口与 Protobuf v1。
 实体模型的外部世界权威未接入，相关发布返回 AUTHORITY_UNAVAILABLE。
 
+## 模型库 alpha.2 上线检查
+
+模型库使用 `/api/library/v1` JSON 扩展，不改变 Protobuf v1。部署客户端目标版本为
+`1.0.0-alpha.2`，构建平台以客户端 `enabled_platforms=fabric` 为准。升级前停止服务，
+备份实际启动目录中的 `data/metadata.sqlite3`（包括存在的 WAL/SHM）、整个头像资源目录和配置。
+不要在运行服务时直接复制 SQLite 主文件。自动迁移前的 `pre-library-*.sqlite3` 是
+SQLite backup 快照（文件名形如 `metadata.pre-library-<随机值>.sqlite3`），不能替代完整资源和运营配置备份。
+
+`[model_library]` 配置 `max_upload_bytes` 和 `categories`，客户端每次投稿重新获取限额。
+配置管理员使用 `[[model_library.admins]]` 的已认证玩家 UUID、玩家名及密码哈希。
+使用 `python tools/library_admin_hash.py` 在本地遮罩输入生成哈希；不把密码放进命令行或仓库。
+不存在管理员账户创建 GUI。配置删除/改密后旧管理令牌失效；记住登录仅保存可轮换刷新令牌，
+客户端无法建立当前用户专属文件权限时会禁用该选项。
+
+模型库私有当前装备默认不向他人展示；衣柜上传默认展示，其独立开关绑定资源版本。
+屏蔽优先于所有展示选择，同内容副本和旧分发入口也须保持 SELF_ONLY。
+举报不会自动屏蔽；申诉处理说明不会自动解除屏蔽。管理员解除来源屏蔽后，模型库条目
+保持 PRIVATE，不自动重新装备；其他来源的有效屏蔽仍然生效。
+
+schema 3→4 已在合成临时库验证旧策略保留、升级前备份、重复打开和未知版本拒绝。
+回退到 schema 3 的后端必须使用匹配的升级前数据库与资源备份，不能让旧二进制打开 schema 4。
+更早的原始 Figura 基线 `28fb81e` 已验证可使用保留的旧 `.moon` 文件运行并保留新增云端数据；
+这不代表其可读 schema 4 或最新装备，也不代表生产切换已经执行。
+
+自动进程检查覆盖旧基线、当前后端 Protobuf 开/关、当前 Figura Java 适配器及数据/字节保留。
+真实公网端点、运营备份恢复演练和实际游戏窗口仍为 MANUAL/PENDING，按本期要求不阻塞开发检查点。
+
 ## 从源码直接启动
 
 需要 Rust/Cargo 与当前 Windows Rust 工具链。进入后端仓库，不是客户端 Gradle 目录。
@@ -86,7 +113,7 @@ limitations.maxAvatarSize 的单位是十进制 KB，示例值 100 较小；按�
 旧 owner.moon 保留原字节，首次查询对应 owner 时惰性补建 cloud-v1 索引和不可变 blob，
 不解密 YSM、不转换原文件。重复导入同一内容不增加资源 revision，也不覆盖已选 YSM。
 data/metadata.sqlite3 保存全部持久业务元数据：用户资料/封禁/上传权限、UUID 与模型版本关联、
-装备/兼容引用、删除 tombstone、幂等操作及 YSM 快照/水位/恢复尾部。SQLite user_version 当前为 1，
+装备/兼容引用、删除 tombstone、幂等操作及 YSM 快照/水位/恢复尾部。SQLite user_version 当前为 4，
 未知版本拒绝启动，不猜测性改写。旧 schema_version=1 的 manifest.json 首次启动自动事务导入，
 保留原文件作为迁移来源；此后仅 SQLite 权威，不再双写旧 manifest。
 data/avatars/models 保存按原始 SHA-256 命名的完整分发字节和历史 UUID .moon；data/avatars/upload 保存上传暂存。

@@ -313,7 +313,7 @@ pub fn router(state: AppState) -> Router<AppState> {
             put(models::block).delete(models::unblock),
         )
         .layer(DefaultBodyLimit::max(65536))
-        .layer(axum::middleware::from_fn_with_state(state, dispatch))
+        .route_layer(axum::middleware::from_fn_with_state(state, dispatch))
 }
 
 async fn dispatch(

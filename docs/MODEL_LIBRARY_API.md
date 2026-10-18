@@ -539,3 +539,39 @@ appeals/review/unblock, wardrobe reset/block CAS, visibility defaults and ban
 precedence. Logs: TEMP/omnimorph-m6-final-backend-{build,tests,saturation}.log.
 Real deployment credentials, actual game windows and visual review remain
 MANUAL/PENDING.
+
+## M7 acceptance checkpoint
+
+The complete Rust batch passes 85 tests with the Java classpath gate enabled;
+the intentionally isolated worker-saturation test passes separately. Production
+Java adapters exercise Figura/plain YSM/encrypted YSM in both protocol
+directions, and `LibraryHttpIntegrationTest` runs the actual library client,
+DTOs, grants, image decode/cache, model preview/formal transfer, SHA/NBT checks,
+download receipts and private-policy denial against the Rust listener.
+No game window, GPU device or framebuffer is used as visual evidence.
+
+Acceptance found and fixed two scoped contract gaps: free-text searches now
+include tags and administrator uploader names/UUIDs; library authentication
+uses matched-route middleware so disabled Protobuf paths retain 404 behavior.
+Rename/ambiguous-name tests also confirm grants stay keyed by UUID.
+
+The 10,000-model fixture uses four long Chinese author names and page size 8.
+Twenty dedicated local HTTP samples measured p50 40.480 ms, p95 61.517 ms,
+maximum 62.375 ms, maximum JSON body 5,322 bytes. A 48-row request is rejected.
+SQLite reports the `library_public` covering index for published rows, indexed
+hash/identity joins and a temporary sort. These debug/local synthetic numbers
+are evidence of bounded pagination, not a production latency/FPS guarantee.
+
+Current Figura Java -> original `28fb81e` executable, and the current executable
+with Protobuf disabled/enabled, pass actual temporary-process authentication,
+profile/raw-byte and additive-data retention gates. Only transient SHM indexes
+and empty WAL files are excluded from byte-tree comparisons; nonempty WAL,
+databases and blobs remain checked. Schema-3-to-4 backup/restore compatibility
+remains distinct from the much older executable's legacy-file fallback.
+
+Evidence logs under TEMP: `omnimorph-m7-final-backend-regression.log`,
+`omnimorph-m7-final-saturation.log`, `omnimorph-m7-library-cross-language.log`,
+`omnimorph-m7-catalog-performance.log`, `omnimorph-m7-production-process.log`,
+`omnimorph-m7-rename-grants.log`. Deployment guidance is in DEPLOYMENT.md and
+SQLITE.md. Public deployment, real game rendering/focus/CJK, heavy-model frame
+timings and GPU/memory stress remain MANUAL/PENDING as requested.

@@ -363,7 +363,9 @@ impl Storage {
             AND (:status = '' OR m.moderation_status = :status)
             AND (:authorization = '' OR m.requires_authorization = (:authorization = 'required'))
             AND (m.display_name LIKE :q ESCAPE '\' OR m.internal_name LIKE :q ESCAPE '\'
-                OR EXISTS(SELECT 1 FROM json_each(m.authors_json) a WHERE a.value LIKE :q ESCAPE '\'))
+                OR EXISTS(SELECT 1 FROM json_each(m.authors_json) a WHERE a.value LIKE :q ESCAPE '\')
+                OR EXISTS(SELECT 1 FROM library_tags t WHERE t.model_id = m.model_id AND t.display_tag LIKE :q ESCAPE '\')
+                OR (:admin AND (m.uploader_name_snapshot LIKE :q ESCAPE '\' OR m.uploader_uuid LIKE :q ESCAPE '\')))
             AND NOT EXISTS(SELECT 1 FROM json_each(:tags) wanted WHERE NOT EXISTS
                 (SELECT 1 FROM library_tags t WHERE t.model_id = m.model_id AND t.normalized_tag = wanted.value))";
         self.library_read(|database| {

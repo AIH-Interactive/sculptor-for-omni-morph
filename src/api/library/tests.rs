@@ -13,6 +13,7 @@ mod admin;
 mod catalog;
 mod reports;
 mod appeals;
+mod acceptance;
 mod equipment;
 mod images;
 mod lifecycle;
@@ -767,6 +768,38 @@ async fn grants_resolve_only_verified_players_and_private_overrides_grants() {
             .status(),
         200
     );
+    server.state.user_manager.insert(
+        Uuid::from_u128(3),
+        "synthetic-token-3".into(),
+        Userinfo {
+            uuid: Uuid::from_u128(3),
+            nickname: "RenamedPlayer".into(),
+            ..Default::default()
+        },
+    ).unwrap();
+    let model_path = format!("/api/library/v1/models/{id}");
+    assert_eq!(server.request(Method::PATCH, &model_path, 1)
+        .json(&json!({"operation_id": library::random_id(), "expected_revision": 2, "visibility": "PUBLIC"}))
+        .send().await.unwrap().status(), 200);
+    assert_eq!(server.request(Method::GET, &model_path, 3).send().await.unwrap().status(), 200,
+        "renaming a player must retain the UUID grant");
+    let renamed_path = format!("/api/library/v1/players/resolve?model_id={id}&name=RenamedPlayer");
+    let renamed = server.request(Method::GET, &renamed_path, 1).send().await.unwrap().json::<Value>().await.unwrap();
+    assert_eq!(renamed["items"][0]["uuid"], Uuid::from_u128(3).to_string());
+    server.state.user_manager.insert(
+        Uuid::from_u128(2),
+        "synthetic-token-2".into(),
+        Userinfo {
+            uuid: Uuid::from_u128(2),
+            nickname: "RenamedPlayer".into(),
+            ..Default::default()
+        },
+    ).unwrap();
+    assert_eq!(server.request(Method::GET, &renamed_path, 1).send().await.unwrap().status(), 409,
+        "ambiguous verified names must not select an arbitrary UUID");
+    assert_eq!(server.request(Method::PATCH, &model_path, 1)
+        .json(&json!({"operation_id": library::random_id(), "expected_revision": 3, "visibility": "PRIVATE"}))
+        .send().await.unwrap().status(), 200);
     assert_eq!(
         server
             .request(Method::GET, &format!("/api/library/v1/models/{id}"), 3)

@@ -6,6 +6,13 @@ fn tree(path: &Path) -> BTreeMap<PathBuf, Vec<u8>> {
         .into_iter()
         .map(|entry| entry.unwrap())
         .filter(|entry| entry.file_type().is_file())
+        .filter(|entry| {
+            let name = entry.file_name().to_string_lossy();
+            // SQLite may create an empty WAL and its transient shared-memory index on open.
+            // Neither represents retained records. Nonempty WAL data is still compared.
+            !name.ends_with(".sqlite3-shm")
+                && !(name.ends_with(".sqlite3-wal") && entry.metadata().unwrap().len() == 0)
+        })
         .map(|entry| {
             (
                 entry.path().strip_prefix(path).unwrap().to_path_buf(),
