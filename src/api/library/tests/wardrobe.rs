@@ -61,6 +61,121 @@ async fn avatar(server: &Server, owner: u128, observer: u128) -> reqwest::Respon
 }
 
 #[tokio::test]
+async fn administrator_preview_is_source_bound_and_does_not_expose_blocked_wardrobe_to_players() {
+    let server = Server::start().await;
+    let bytes = figura_package();
+    upload(&server, 21, &bytes).await;
+    let credentials = super::admin::issue(&server).await;
+    let request = |method, path: &str| {
+        server
+            .request(method, path, 4)
+            .header("x-omnimorph-origin", &server.base)
+            .header(
+                "x-omnimorph-admin",
+                credentials["access_token"].as_str().unwrap(),
+            )
+    };
+    let page = request(Method::GET, "/api/library/v1/admin/wardrobe?page=1")
+        .send()
+        .await
+        .unwrap()
+        .json::<Value>()
+        .await
+        .unwrap();
+    let item = &page["items"][0];
+    let owner = Uuid::from_u128(21);
+    let path = format!("/api/library/v1/admin/wardrobe-preview/CURRENT/{owner}?asset_id={}&asset_revision={}&equipment_revision={}",
+        item["asset_id"].as_str().unwrap(), item["asset_revision"], item["equipment_revision"]);
+    assert_eq!(
+        server
+            .request(Method::GET, &path, 21)
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        403
+    );
+    assert_eq!(
+        request(Method::GET, &path)
+            .send()
+            .await
+            .unwrap()
+            .bytes()
+            .await
+            .unwrap()
+            .as_ref(),
+        bytes.as_slice()
+    );
+    let stale = path.replace("equipment_revision=1", "equipment_revision=999999");
+    assert_ne!(stale, path);
+    assert_eq!(
+        request(Method::GET, &stale).send().await.unwrap().status(),
+        409
+    );
+    let operation = library::random_id();
+    let input = json!({"operation_id": operation, "expected_equipment_revision": item["equipment_revision"],
+        "asset_id": item["asset_id"], "asset_revision": item["asset_revision"]});
+    assert_eq!(
+        request(
+            Method::POST,
+            &format!("/api/library/v1/admin/wardrobe/{owner}/block")
+        )
+        .json(&input)
+        .send()
+        .await
+        .unwrap()
+        .status(),
+        200
+    );
+    assert_eq!(avatar(&server, 21, 4).await.status(), 404);
+    let blocked = format!("/api/library/v1/admin/wardrobe-preview/BLOCK/{operation}");
+    assert_eq!(
+        server
+            .request(Method::GET, &blocked, 21)
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        403
+    );
+    let response = request(Method::GET, &blocked).send().await.unwrap();
+    assert_eq!(response.status(), 200);
+    assert!(response.headers()["cache-control"]
+        .to_str()
+        .unwrap()
+        .contains("no-store"));
+    assert_eq!(response.bytes().await.unwrap().as_ref(), bytes.as_slice());
+    upload(&server, 21, &repack(&bytes, true)).await;
+    assert_eq!(
+        request(Method::GET, &path).send().await.unwrap().status(),
+        409
+    );
+    assert_eq!(
+        request(Method::GET, &blocked)
+            .send()
+            .await
+            .unwrap()
+            .bytes()
+            .await
+            .unwrap()
+            .as_ref(),
+        bytes.as_slice()
+    );
+    let missing = format!(
+        "/api/library/v1/admin/wardrobe-preview/BLOCK/{}",
+        library::random_id()
+    );
+    assert_eq!(
+        request(Method::GET, &missing)
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        404
+    );
+}
+
+#[tokio::test]
 async fn admin_manages_only_current_wardrobe_with_cas_reset_and_verified_self_only_ban() {
     let server = Server::start().await;
     let bytes = figura_package();

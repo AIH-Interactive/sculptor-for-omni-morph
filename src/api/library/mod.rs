@@ -1,5 +1,6 @@
 //! Independent HTTP JSON extension; frozen Protobuf v1 remains unchanged.
 mod admin;
+mod admin_preview;
 mod reports;
 mod images;
 mod models;
@@ -300,6 +301,10 @@ pub fn router(state: AppState) -> Router<AppState> {
         .route("/api/library/v1/admin/reports", get(reports::list))
         .route("/api/library/v1/admin/reports/:id/resolve", post(reports::resolve))
         .route("/api/library/v1/admin/wardrobe", get(wardrobe::list))
+        .route(
+            "/api/library/v1/admin/wardrobe-preview/:kind/:id",
+            get(admin_preview::download),
+        )
         .route("/api/library/v1/admin/wardrobe/:owner/reset", post(wardrobe::reset))
         .route("/api/library/v1/admin/wardrobe/:owner/block", post(wardrobe::block))
         .route("/api/library/v1/appeal-targets", get(appeals::targets))
