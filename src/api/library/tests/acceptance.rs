@@ -94,11 +94,38 @@ async fn ten_thousand_models_keep_http_pages_bounded_and_search_includes_tags_an
         assert!(first_name.ends_with(&format!("{:05}", (page - 1) * 8)));
     }
     elapsed.sort();
+    for size in [12, 24, 64] {
+        for page in [1, 2] {
+            let response = server
+                .request(
+                    Method::GET,
+                    &format!("/api/library/v1/models?sort=name&page_size={size}&page={page}"),
+                    2,
+                )
+                .send()
+                .await
+                .unwrap();
+            assert_eq!(response.status(), 200);
+            let bytes = response.bytes().await.unwrap();
+            assert!(bytes.len() <= 65536);
+            let body: Value = serde_json::from_slice(&bytes).unwrap();
+            assert_eq!(body["items"].as_array().unwrap().len(), size as usize);
+            assert_eq!(body["page_size"], size);
+            assert_eq!(body["total"], 10_000);
+            assert_eq!(body["has_next"], true);
+            assert!(
+                body["items"][0]["display_name"]
+                    .as_str()
+                    .unwrap()
+                    .ends_with(&format!("{:05}", (page - 1) * size))
+            );
+        }
+    }
     println!("M7 list HTTP: samples=20, rows=10000, page_size=8, p50={} us, p95={} us, max={} us, max_body={} bytes",
         elapsed[9], elapsed[18], elapsed[19], maximum_bytes);
     assert_eq!(
         server
-            .request(Method::GET, "/api/library/v1/models?page_size=48", 2)
+            .request(Method::GET, "/api/library/v1/models?page_size=65", 2)
             .send()
             .await
             .unwrap()

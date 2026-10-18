@@ -362,7 +362,7 @@ impl Storage {
         }
         let page = query.page.unwrap_or(1);
         let size = query.page_size.unwrap_or(8);
-        if page == 0 || page > 1_000_000 || !(1..=8).contains(&size) {
+        if page == 0 || page > 1_000_000 || !(1..=64).contains(&size) {
             return Err(ErrorCode::InvalidMessage);
         }
         let sort = match query.sort.as_str() {

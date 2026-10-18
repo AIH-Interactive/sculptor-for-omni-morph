@@ -172,9 +172,9 @@ as unknown; do not store that localized fallback as an author.
 | q / moderation reason | 128 / 512 bytes |
 | summary serialized JSON | Author credits are preserved; ordinary control-response limits apply |
 | control request/response | 65536 bytes |
-| page_size | fixed maximum 8, default 8; 1–8 accepted, >8 rejected |
+| model list page_size | Maximum 64, default 8; 1–64 accepted, >64 rejected; clients choose visible card capacity |
 
-Page size remains at most 8; author credits have no separate field budget. Sort fields are
+Model lists advertise max_page_size=64; existing management, authorization and report lists continue to request eight entries. Author credits have no separate field budget. Sort fields are
 updated/newest/downloads/favorites with stable model_id tie-breaker. Public,
 mine, favorites queries and their totals share identical visibility predicates.
 Admin alone may filter moderation status. SQL uses parameters and sort allowlist.

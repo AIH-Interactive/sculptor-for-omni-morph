@@ -603,7 +603,7 @@ async fn authenticated_lists_and_totals_apply_identical_policy_and_pending_rules
         .unwrap();
     assert_eq!(admin.status(), 403);
     let invalid = server
-        .request(Method::GET, "/api/library/v1/models?page_size=9", 1)
+        .request(Method::GET, "/api/library/v1/models?page_size=65", 1)
         .send()
         .await
         .unwrap();
