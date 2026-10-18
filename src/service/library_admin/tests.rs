@@ -1,5 +1,3 @@
-\\?\D:\UserData\Desktop\Project\Figura\omnm-cloud\src\service\library_admin\tests.rs:
-
 use super::*;
 
 // Synthetic test-only password/salt; independently derived with Python hashlib.
