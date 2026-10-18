@@ -64,6 +64,7 @@ pub struct Metadata {
     pub model_type: String,
     pub category_id: String,
     pub description: String,
+    #[serde(default)]
     pub tags: Vec<String>,
     pub visibility: Visibility,
     pub requires_authorization: bool,
@@ -92,14 +93,13 @@ impl Metadata {
             self.model_type.as_str(),
             "FIGURA" | "YSM_PLAIN" | "YSM_ENCRYPTED"
         ) || !categories.contains(&self.category_id)
-            || self.authors.len() > 4
             || self.tags.len() > 8
         {
             return Err(ErrorCode::InvalidMessage);
         }
         let mut authors = std::collections::HashSet::new();
         for author in &self.authors {
-            text(author, 48, false)?;
+            text(author, usize::MAX, false)?;
             if author.trim() != author || !authors.insert(author) {
                 return Err(ErrorCode::InvalidMessage);
             }
@@ -112,6 +112,43 @@ impl Metadata {
             }
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod metadata_tests {
+    use super::*;
+
+    #[test]
+    fn original_credits_accept_many_authors_and_optional_tags() {
+        let categories = vec!["full_model".to_owned()];
+        let mut metadata = Metadata {
+            display_name: "Wings".to_owned(),
+            internal_name: "Wings".to_owned(),
+            authors: (0..9)
+                .map(|index| format!("Original author {index}"))
+                .collect(),
+            model_type: "FIGURA".to_owned(),
+            category_id: "full_model".to_owned(),
+            description: String::new(),
+            tags: Vec::new(),
+            visibility: Visibility::Public,
+            requires_authorization: true,
+        };
+        assert!(metadata.validate(&categories).is_ok());
+        let mut optional_tags = serde_json::to_value(&metadata).unwrap();
+        optional_tags.as_object_mut().unwrap().remove("tags");
+        let without_tags: Metadata = serde_json::from_value(optional_tags).unwrap();
+        assert!(without_tags.tags.is_empty());
+        assert!(without_tags.validate(&categories).is_ok());
+        metadata.authors = vec!["Long original credits\n".repeat(20).trim().to_owned()];
+        assert!(metadata.validate(&categories).is_ok());
+        metadata.authors = vec!["中".repeat(10000)];
+        assert!(metadata.validate(&categories).is_ok());
+        metadata.authors = (0..128).map(|index| format!("Author {index}")).collect();
+        assert!(metadata.validate(&categories).is_ok());
+        metadata.authors = vec!["bad\0author".to_owned()];
+        assert!(metadata.validate(&categories).is_err());
     }
 }
 

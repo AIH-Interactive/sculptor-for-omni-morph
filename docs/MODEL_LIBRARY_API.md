@@ -164,21 +164,17 @@ as unknown; do not store that localized fallback as an author.
 | Field | Limit |
 | --- | --- |
 | display_name / internal_name | 96 / 96 bytes |
-| authors | 4 entries, 48 bytes each |
+| authors | No author-count or per-author/combined byte limit; ordinary control-body limits apply |
 | uploader name snapshot | 64 bytes |
 | category_id | 32 ASCII bytes, configured allowlist |
-| tags | 8 entries of 32 bytes |
+| tags | Optional (omitted or empty array); up to 8 entries of 32 bytes |
 | description | 4096 bytes (detail only) |
 | q / moderation reason | 128 / 512 bytes |
-| summary serialized JSON | 6144 bytes including worst-case escaped text |
+| summary serialized JSON | Author credits are preserved; ordinary control-response limits apply |
 | control request/response | 65536 bytes |
 | page_size | fixed maximum 8, default 8; 1–8 accepted, >8 rejected |
 
-8 worst-case summaries consume 49152 bytes, leaving over 16 KiB for envelope.
-Summary byte bound is validated when writing, not by dropping items from a
-page. Offsets always use the accepted page_size. This is the plan's explicit
-64 KiB-driven alternative to the illustrative 48-item performance sample;
-M7 still tests 10,000 rows at the actual supported maximum. Sort fields are
+Page size remains at most 8; author credits have no separate field budget. Sort fields are
 updated/newest/downloads/favorites with stable model_id tie-breaker. Public,
 mine, favorites queries and their totals share identical visibility predicates.
 Admin alone may filter moderation status. SQL uses parameters and sort allowlist.
@@ -583,3 +579,11 @@ Evidence logs under TEMP: `omnimorph-m7-final-backend-regression.log`,
 `omnimorph-m7-rename-grants.log`. Deployment guidance is in DEPLOYMENT.md and
 SQLITE.md. Public deployment, real game rendering/focus/CJK, heavy-model frame
 timings and GPU/memory stress remain MANUAL/PENDING as requested.
+
+## R28 original-author credits and optional tags
+
+Author-count, per-author length and combined author-length limits have been removed at the user's request. Source credits retain their original order and text without truncation. Duplicate/control-character validation and ordinary 65536-byte control request/response limits remain. Tags may be omitted or supplied as an empty array; nonempty tags keep the existing count/size limits.
+
+Regressions cover nine original authors, 128 authors, a 10000-character author string, multiline credits and omitted/empty tags. The former fixed 6144-byte worst-case summary calculation no longer applies to arbitrary credits. Deploy the matching server and client validation changes together; older servers retain their previous author limits.
+
+R28 checkpoint: full cargo test --locked passed (102 passed, 0 failed, 1 pre-existing ignored); cargo build --locked passed. Commands ran through foreground PowerShell Tee with exit checks. API documentation and scoped formatting/diff checks passed. Real-game upload acceptance remains MANUAL/PENDING.
