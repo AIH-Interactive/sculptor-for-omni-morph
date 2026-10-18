@@ -1,7 +1,7 @@
 use super::*;
 use std::io::{Read, Write};
 
-fn repack(bytes: &[u8], change_name: bool) -> Vec<u8> {
+pub(super) fn repack(bytes: &[u8], change_name: bool) -> Vec<u8> {
     let mut nbt = Vec::new();
     flate2::read::GzDecoder::new(bytes)
         .read_to_end(&mut nbt)
@@ -20,7 +20,7 @@ fn repack(bytes: &[u8], change_name: bool) -> Vec<u8> {
     encoder.finish().unwrap()
 }
 
-async fn upload(server: &Server, player: u128, bytes: &[u8]) {
+pub(super) async fn upload(server: &Server, player: u128, bytes: &[u8]) {
     let uuid = Uuid::from_u128(player);
     server
         .state
@@ -58,6 +58,55 @@ async fn avatar(server: &Server, owner: u128, observer: u128) -> reqwest::Respon
         .send()
         .await
         .unwrap()
+}
+
+#[tokio::test]
+async fn admin_manages_only_current_wardrobe_with_cas_reset_and_verified_self_only_ban() {
+    let server = Server::start().await;
+    let bytes = figura_package();
+    upload(&server, 21, &bytes).await;
+    upload(&server, 22, &bytes).await;
+    let credentials = super::admin::issue(&server).await;
+    let request = |method, path: &str| server.request(method, path, 4)
+        .header("x-omnimorph-origin", &server.base)
+        .header("x-omnimorph-admin", credentials["access_token"].as_str().unwrap());
+    let list = "/api/library/v1/admin/wardrobe?q=Synthetic21&page=1";
+    assert_eq!(server.request(Method::GET, list, 2).send().await.unwrap().status(), 403);
+    let page = request(Method::GET, list).send().await.unwrap().json::<Value>().await.unwrap();
+    assert_eq!(page["total"], 1);
+    let item = &page["items"][0];
+    assert_eq!(item["owner"], Uuid::from_u128(21).to_string());
+    let block = format!("/api/library/v1/admin/wardrobe/{}/block", Uuid::from_u128(21));
+    let input = json!({"operation_id": library::random_id(), "expected_equipment_revision": item["equipment_revision"],
+        "asset_id": item["asset_id"], "asset_revision": item["asset_revision"]});
+    assert_eq!(server.request(Method::POST, &block, 2).json(&input).send().await.unwrap().status(), 403);
+    let mut stale = input.clone();
+    stale["expected_equipment_revision"] = json!(999);
+    assert_eq!(request(Method::POST, &block).json(&stale).send().await.unwrap().status(), 409);
+    for _ in 0..2 {
+        let response = request(Method::POST, &block).json(&input).send().await.unwrap();
+        assert_eq!(response.status(), 200, "{}", response.text().await.unwrap());
+    }
+    assert_eq!(avatar(&server, 21, 21).await.status(), 200);
+    assert_eq!(avatar(&server, 21, 22).await.status(), 404);
+    assert_eq!(avatar(&server, 22, 21).await.status(), 404);
+    let reset = format!("/api/library/v1/admin/wardrobe/{}/reset", Uuid::from_u128(21));
+    let mut reset_input = input.clone();
+    reset_input["operation_id"] = json!(library::random_id());
+    for _ in 0..2 {
+        let response = request(Method::POST, &reset).json(&reset_input).send().await.unwrap();
+        assert_eq!(response.status(), 200, "{}", response.text().await.unwrap());
+    }
+    assert!(server.state.storage.equipped(Uuid::from_u128(21)).unwrap().primary.is_none());
+    let after = request(Method::GET, list).send().await.unwrap().json::<Value>().await.unwrap();
+    assert_eq!(after["total"], 0);
+    // A stale snapshot cannot reset the replacement upload.
+    upload(&server, 21, &repack(&bytes, true)).await;
+    reset_input["operation_id"] = json!(library::random_id());
+    assert_eq!(request(Method::POST, &reset).json(&reset_input).send().await.unwrap().status(), 409);
+    assert!(server.state.storage.equipped(Uuid::from_u128(21)).unwrap().primary.is_some());
+    let reopened = Storage::open(server._directory.path()).unwrap();
+    assert!(reopened.library_hash_blocked("RAW_SHA256", &faster_hex::hex_string(&crate::storage::sha256(&bytes))).unwrap());
 }
 
 #[tokio::test]

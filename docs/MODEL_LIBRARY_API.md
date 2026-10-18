@@ -492,3 +492,50 @@ worker-saturation test pass. Fabric compileJava, avatarCloudRefreshSmokeTest and
 cloudAdapterSmokeTest pass. Logs are captured in build.log and copied to TEMP
 as omnimorph-m3-{build,final-all,saturation,client}.log. Real deployment rollback
 and visual/in-game acceptance remain MANUAL/PENDING, not equivalent to a PASS.
+
+## M6 user-authorized management additions (alpha.2)
+
+The library JSON extension remains version 1. Storage schema 4 adds private
+reports, appeals, wardrobe hash bans and per-resource wardrobe visibility.
+Upgrades from schema 3 retain policy data and take a pre-upgrade SQLite backup.
+An older binary must use its matching pre-upgrade backup, not open schema 4.
+Protocol v1 messages and existing wardrobe upload/delete formats are unchanged.
+
+All routes below use the current authenticated player; administrator routes
+add the verified, origin/instance/player/config-bound administrator session.
+Lists are server-paginated, eight entries per page, with page/total/has_next.
+Every mutation has a canonical operation_id and durable replay; relevant
+resource, equipment, policy or record revisions are checked in the transaction.
+
+| Route | Contract |
+| --- | --- |
+| POST `/api/library/v1/models/{id}/reports` | operation_id, reason (1–512 UTF-8 bytes); one pending report per reporter/model; model must currently be visible and ACTIVE |
+| GET `/api/library/v1/admin/reports?page=1&resolved=false` | Administrator-only report body, reporter UUID and immutable model ID |
+| POST `/api/library/v1/admin/reports/{id}/resolve` | operation_id, expected_revision; marks resolved without moderating the model |
+| GET `/api/library/v1/admin/wardrobe?page=1&q=player` | Current primary wardrobe uploads only; excludes library aliases and upload history |
+| POST `/api/library/v1/admin/wardrobe/{owner}/reset` | operation_id, expected_equipment_revision, asset_id, asset_revision; clears current equipment, keeps local/history data |
+| POST `/api/library/v1/admin/wardrobe/{owner}/block` | Same CAS body; bans verified raw/NBT/encrypted-source identities; own use remains available |
+| GET `/api/library/v1/wardrobe` | Authenticated player's own current non-library resource, effective show_equipment and blocked state; available=false when absent/library-bound |
+| PATCH `/api/library/v1/wardrobe` | operation_id, expected_equipment_revision, asset_id, asset_revision, show_equipment; default true, resource-scoped, rejects a blocked opt-in |
+| GET `/api/library/v1/appeal-targets?page=1` | Restricted own blocked targets: target_kind, target_id, own name only; no image, bytes or library download authority |
+| POST `/api/library/v1/appeals` | operation_id, target_kind (LIBRARY/WARDROBE), target_id, reason; authenticated ownership/current verified wardrobe copy required; one pending appeal per player/target |
+| GET `/api/library/v1/appeals?page=1&resolved=false` | Only the current uploader's appeals and processing responses |
+| GET `/api/library/v1/admin/appeals?page=1&resolved=false` | Verified administrator queue |
+| POST `/api/library/v1/admin/appeals/{id}/resolve` | operation_id, expected_revision, response (1–512 UTF-8 bytes); records response without unblocking |
+| POST `/api/library/v1/admin/appeals/{id}/unblock` | operation_id, expected_revision; explicit independent removal of that source ban, keeps catalog PRIVATE and does not equip; other active source bans still apply |
+
+Ordinary catalogs/details still hide BLOCKED models from uploaders. The appeal
+target route is the narrow uploader-only exception for moderation review. It
+may identify the originating sanction for the uploader's verified wardrobe
+copy without returning another uploader's private model name or cover.
+Wardrobe visibility defaults true; library-private equipment intent defaults
+false. Both feed the existing distribution checks and cannot override a ban.
+Appeal responses do not create observer authorization or remove local files.
+
+M6 automated evidence: cargo build; 82 regular tests plus the separately run
+worker-saturation test pass. The schema-3 upgrade test verifies backup/version,
+policy retention and repeat-open. Real Axum tests cover report privacy/replay,
+appeals/review/unblock, wardrobe reset/block CAS, visibility defaults and ban
+precedence. Logs: TEMP/omnimorph-m6-final-backend-{build,tests,saturation}.log.
+Real deployment credentials, actual game windows and visual review remain
+MANUAL/PENDING.

@@ -210,7 +210,7 @@ pub(super) fn resource_access(
             .query_row(
                 "SELECT EXISTS(SELECT 1 FROM avatars a JOIN library_verified_blobs v
                  ON v.raw_sha256 = lower(hex(a.raw_sha256))
-             JOIN library_blocked_hashes b ON b.hash_kind = v.hash_kind
+             JOIN library_active_blocked_hashes b ON b.hash_kind = v.hash_kind
                  AND b.verified_hash = v.verified_hash AND b.active = 1
              WHERE a.owner_uuid = ?1 AND a.asset_id = ?2 AND a.revision = ?3)",
                 params![owner.to_string(), asset, library::sql_integer(revision)?],
@@ -235,6 +235,16 @@ pub(super) fn resource_access(
         .optional()
         .map_err(sql_error)?;
     let Some((source, canonical)) = source else {
+        if observer.uuid != owner {
+            let hidden: bool = database.query_row(
+                "SELECT EXISTS(SELECT 1 FROM library_wardrobe_settings WHERE owner_uuid = ?1
+                 AND asset_id = ?2 AND asset_revision = ?3 AND show_equipment = 0)",
+                params![owner.to_string(), asset, library::sql_integer(revision)?], |row| row.get(0),
+            ).map_err(sql_error)?;
+            if hidden {
+                return Err(ErrorCode::NotFound);
+            }
+        }
         return Ok(());
     };
     if canonical {

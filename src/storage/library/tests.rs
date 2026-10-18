@@ -80,6 +80,47 @@ fn count(storage: &Storage, table: &str) -> i64 {
 }
 
 #[test]
+fn version_three_upgrade_preserves_policy_and_backs_up_before_management_tables() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("metadata.sqlite3");
+    let storage = Storage::open(directory.path()).unwrap();
+    seed(&storage, "model");
+    storage.library_transaction(|transaction| {
+        set_blocked(transaction, "model", Uuid::from_u128(4), 1, true, "synthetic", 2)
+    }).unwrap();
+    drop(storage);
+    let database = Connection::open(&path).unwrap();
+    database.execute_batch(
+        "DROP VIEW library_effective_models; DROP VIEW library_hash_blocked_models;
+         DROP VIEW library_active_blocked_hashes; DROP TABLE library_wardrobe_blocks;
+         DROP TABLE library_wardrobe_settings; DROP TABLE library_reports; DROP TABLE library_appeals;"
+    ).unwrap();
+    let (_, views) = include_str!("../library_distribution.sql").split_once("CREATE VIEW library_hash_blocked_models AS").unwrap();
+    database.execute_batch(&format!("CREATE VIEW library_hash_blocked_models AS{views}")).unwrap();
+    database.pragma_update(None, "user_version", 3).unwrap();
+    drop(database);
+
+    let storage = Storage::open(directory.path()).unwrap();
+    assert_eq!(count(&storage, "library_models"), 1);
+    assert_eq!(count(&storage, "library_blocked_hashes"), 1);
+    for table in ["library_reports", "library_appeals", "library_wardrobe_blocks", "library_wardrobe_settings"] {
+        assert_eq!(count(&storage, table), 0);
+    }
+    assert!(storage.library_hash_blocked("RAW_SHA256", &"a".repeat(64)).unwrap());
+    let backup = std::fs::read_dir(directory.path()).unwrap()
+        .map(|entry| entry.unwrap().path())
+        .find(|entry| entry.to_string_lossy().contains("pre-library-")).unwrap();
+    let backup = Connection::open(backup).unwrap();
+    assert_eq!(backup.pragma_query_value(None, "user_version", |row| row.get::<_, u32>(0)).unwrap(), 3);
+    let policy: (String, String) = backup.query_row("SELECT visibility, moderation_status FROM library_models", [],
+        |row| Ok((row.get(0)?, row.get(1)?))).unwrap();
+    assert_eq!(policy, ("PRIVATE".into(), "BLOCKED".into()));
+    drop(storage);
+    let reopened = Storage::open(directory.path()).unwrap();
+    assert_eq!(count(&reopened, "library_models"), 1);
+}
+
+#[test]
 fn version_two_equipment_settings_default_closed_and_survive_restart() {
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path().join("metadata.sqlite3");
@@ -88,7 +129,7 @@ fn version_two_equipment_settings_default_closed_and_survive_restart() {
     drop(storage);
     let database = Connection::open(&path).unwrap();
     database
-        .execute_batch("DROP VIEW library_effective_models; DROP VIEW library_hash_blocked_models; DROP TABLE library_equipment_settings; DROP TABLE library_verified_blobs; PRAGMA user_version = 2;")
+        .execute_batch("DROP VIEW library_effective_models; DROP VIEW library_hash_blocked_models; DROP VIEW library_active_blocked_hashes; DROP TABLE library_wardrobe_blocks; DROP TABLE library_wardrobe_settings; DROP TABLE library_appeals; DROP TABLE library_equipment_settings; DROP TABLE library_verified_blobs; DROP TABLE library_reports; PRAGMA user_version = 2;")
         .unwrap();
     drop(database);
 

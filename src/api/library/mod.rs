@@ -1,9 +1,12 @@
 //! Independent HTTP JSON extension; frozen Protobuf v1 remains unchanged.
 mod admin;
+mod reports;
 mod images;
 mod models;
 mod transfers;
 mod uploads;
+mod wardrobe;
+mod appeals;
 
 #[cfg(test)]
 mod tests;
@@ -293,6 +296,18 @@ pub fn router(state: AppState) -> Router<AppState> {
         .route("/api/library/v1/admin/login", post(admin::login))
         .route("/api/library/v1/admin/refresh", post(admin::refresh))
         .route("/api/library/v1/admin/logout", post(admin::logout))
+        .route("/api/library/v1/models/:id/reports", post(reports::submit))
+        .route("/api/library/v1/admin/reports", get(reports::list))
+        .route("/api/library/v1/admin/reports/:id/resolve", post(reports::resolve))
+        .route("/api/library/v1/admin/wardrobe", get(wardrobe::list))
+        .route("/api/library/v1/admin/wardrobe/:owner/reset", post(wardrobe::reset))
+        .route("/api/library/v1/admin/wardrobe/:owner/block", post(wardrobe::block))
+        .route("/api/library/v1/appeal-targets", get(appeals::targets))
+        .route("/api/library/v1/wardrobe", get(wardrobe::own).patch(wardrobe::visibility))
+        .route("/api/library/v1/appeals", get(appeals::mine).post(appeals::submit))
+        .route("/api/library/v1/admin/appeals", get(appeals::list))
+        .route("/api/library/v1/admin/appeals/:id/resolve", post(appeals::resolve))
+        .route("/api/library/v1/admin/appeals/:id/unblock", post(appeals::unblock))
         .route(
             "/api/library/v1/admin/models/:id/block",
             put(models::block).delete(models::unblock),

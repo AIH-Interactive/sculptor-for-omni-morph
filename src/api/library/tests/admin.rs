@@ -12,13 +12,26 @@ pub(super) async fn configure(server: &Server) {
     server.state.config.write().await.model_library.admins = config.admins;
 }
 
+/// Synthetic authority for feature tests; password/HTTP login has its own independent coverage.
+pub(super) async fn issue(server: &Server) -> Value {
+    configure(server).await;
+    let config = server.state.config.read().await;
+    let instance = format!("{}:{}", server.state.protocol_sessions.instance_id, server.state.protocol_sessions.server_epoch);
+    let binding = crate::service::library_admin::AdminBinding {
+        player: Uuid::from_u128(4), origin: &server.base, instance: &instance,
+        config: &config.model_library.admins[0],
+    };
+    let credentials = server.state.storage.library_admin_issue(&binding, false, crate::storage::now_seconds()).unwrap();
+    json!({"access_token": credentials.access_token})
+}
+
 fn request(server: &Server, method: Method, path: &str) -> reqwest::RequestBuilder {
     server
         .request(method, path, 4)
         .header("x-omnimorph-origin", &server.base)
 }
 
-async fn login(server: &Server, operation: &str) -> Value {
+pub(super) async fn login(server: &Server, operation: &str) -> Value {
     let response = request(server, Method::POST, "/api/library/v1/admin/login")
         .json(&json!({"operation_id": operation, "player_name": "Player4", "password": "synthetic-test-password", "remember": true})).send().await.unwrap();
     assert_eq!(response.status(), 200, "{}", response.text().await.unwrap());

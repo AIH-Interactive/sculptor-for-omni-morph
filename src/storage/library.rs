@@ -4,7 +4,7 @@ use rusqlite::{Connection, OptionalExtension, Transaction, params};
 use std::path::Path;
 use uuid::Uuid;
 
-pub(super) const SCHEMA_VERSION: u32 = 3;
+pub(super) const SCHEMA_VERSION: u32 = 4;
 
 pub(crate) fn sql_integer(value: u64) -> Result<i64> {
     i64::try_from(value).map_err(|_| ErrorCode::InvalidMessage)
@@ -31,8 +31,19 @@ pub(super) fn migrate(database: &mut Connection, path: &Path, version: u32) -> R
             .execute_batch(include_str!("library.sql"))
             .map_err(sql_error)?;
     }
+    if version < 3 {
+        transaction
+            .execute_batch(include_str!("library_distribution.sql"))
+            .map_err(sql_error)?;
+    }
     transaction
-        .execute_batch(include_str!("library_distribution.sql"))
+        .execute_batch(include_str!("library_reports.sql"))
+        .map_err(sql_error)?;
+    transaction
+        .execute_batch(include_str!("library_wardrobe.sql"))
+        .map_err(sql_error)?;
+    transaction
+        .execute_batch(include_str!("library_appeals.sql"))
         .map_err(sql_error)?;
     transaction
         .pragma_update(None, "user_version", SCHEMA_VERSION)
@@ -63,7 +74,7 @@ impl Storage {
         self.library_read(|database| {
             database
                 .query_row(
-                    "SELECT EXISTS(SELECT 1 FROM library_blocked_hashes
+                    "SELECT EXISTS(SELECT 1 FROM library_active_blocked_hashes
                  WHERE hash_kind = ?1 AND verified_hash = ?2 AND active = 1)",
                     params![kind, hash],
                     |row| row.get(0),

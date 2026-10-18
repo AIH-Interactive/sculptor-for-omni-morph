@@ -315,7 +315,7 @@ impl CommitContext {
                         .map_err(sql_error)?;
                 }
                 // A known banned package cannot be republished under a fresh library ID.
-                let banned: bool = transaction.query_row("SELECT EXISTS(SELECT 1 FROM library_revision_hashes r JOIN library_blocked_hashes b
+                let banned: bool = transaction.query_row("SELECT EXISTS(SELECT 1 FROM library_revision_hashes r JOIN library_active_blocked_hashes b
                 ON b.hash_kind = r.hash_kind AND b.verified_hash = r.verified_hash WHERE r.model_id = ?1 AND b.active = 1)", [id], |row| row.get(0)).map_err(sql_error)?;
                 transaction
                     .execute(

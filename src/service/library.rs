@@ -1,5 +1,7 @@
 //! Library metadata operations. All methods run on the bounded blocking path.
 pub mod images;
+pub mod reports;
+pub mod appeals;
 mod distribution;
 pub(crate) use distribution::{can_observe_model, event_visible, record_identity};
 pub mod transfers;

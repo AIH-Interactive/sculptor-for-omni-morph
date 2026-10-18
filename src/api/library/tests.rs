@@ -11,6 +11,8 @@ use tokio::sync::RwLock;
 
 mod admin;
 mod catalog;
+mod reports;
+mod appeals;
 mod equipment;
 mod images;
 mod lifecycle;
