@@ -367,6 +367,7 @@ impl Storage {
             AND (:category = '' OR m.category_id = :category)
             AND (:type = '' OR m.model_type = :type)
             AND (:status = '' OR m.moderation_status = :status)
+            AND (:status != '' OR m.moderation_status != 'DELETED')
             AND (:authorization = '' OR m.requires_authorization = (:authorization = 'required'))
             AND (m.display_name LIKE :q ESCAPE '\' OR m.internal_name LIKE :q ESCAPE '\'
                 OR EXISTS(SELECT 1 FROM json_each(m.authors_json) a WHERE a.value LIKE :q ESCAPE '\')
