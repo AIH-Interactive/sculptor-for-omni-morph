@@ -14,6 +14,7 @@ pub mod library;
 pub(crate) mod recycle;
 pub(crate) mod library_equipment;
 pub(crate) mod library_wardrobe;
+pub(crate) mod wardrobe_recycle;
 pub(crate) mod library_admin_preview;
 mod layout;
 #[cfg(test)]

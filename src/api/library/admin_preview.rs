@@ -36,7 +36,13 @@ pub async fn download(
     let avatar =
         blocking(move || storage.library_admin_preview(actor, &source_kind, id, &source_query))
             .await?;
-    let path = state.storage.blob_path(&avatar.raw_sha256)?;
+    let path = if kind == "RECYCLE" {
+        let storage = state.storage.clone();
+        let owner = query.owner.ok_or(ErrorCode::InvalidMessage)?;
+        blocking(move || storage.wardrobe_recycle_source(actor, owner, id)).await?.1
+    } else {
+        state.storage.blob_path(&avatar.raw_sha256)?
+    };
     let file = tokio::fs::File::open(path)
         .await
         .map_err(|_| ErrorCode::NotFound)?;

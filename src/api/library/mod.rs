@@ -318,6 +318,8 @@ pub fn router(state: AppState) -> Router<AppState> {
             put(models::block).delete(models::unblock),
         )
         .route("/api/library/v1/admin/models/:id/restore", post(models::restore))
+        .route("/api/library/v1/admin/wardrobe-recycle", get(wardrobe::recycle_list))
+        .route("/api/library/v1/admin/wardrobe-recycle/:owner/:archive/restore", post(wardrobe::restore))
         .route("/api/library/v1/admin/models/:id/purge", post(models::purge))
         .layer(DefaultBodyLimit::max(65536))
         .route_layer(axum::middleware::from_fn_with_state(state, dispatch))
