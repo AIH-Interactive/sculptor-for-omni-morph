@@ -62,9 +62,11 @@ async fn avatar(server: &Server, owner: u128, observer: u128) -> reqwest::Respon
 
 #[tokio::test]
 async fn administrator_preview_is_source_bound_and_does_not_expose_blocked_wardrobe_to_players() {
+    // Legacy HTTP fixtures share the process-wide avatar directory; reserve this player's files.
+    const PLAYER: u128 = 21_001;
     let server = Server::start().await;
     let bytes = figura_package();
-    upload(&server, 21, &bytes).await;
+    upload(&server, PLAYER, &bytes).await;
     let credentials = super::admin::issue(&server).await;
     let request = |method, path: &str| {
         server
@@ -83,12 +85,12 @@ async fn administrator_preview_is_source_bound_and_does_not_expose_blocked_wardr
         .await
         .unwrap();
     let item = &page["items"][0];
-    let owner = Uuid::from_u128(21);
+    let owner = Uuid::from_u128(PLAYER);
     let path = format!("/api/library/v1/admin/wardrobe-preview/CURRENT/{owner}?asset_id={}&asset_revision={}&equipment_revision={}",
         item["asset_id"].as_str().unwrap(), item["asset_revision"], item["equipment_revision"]);
     assert_eq!(
         server
-            .request(Method::GET, &path, 21)
+            .request(Method::GET, &path, PLAYER)
             .send()
             .await
             .unwrap()
@@ -154,11 +156,11 @@ async fn administrator_preview_is_source_bound_and_does_not_expose_blocked_wardr
         .status(),
         200
     );
-    assert_eq!(avatar(&server, 21, 4).await.status(), 404);
+    assert_eq!(avatar(&server, PLAYER, 4).await.status(), 404);
     let blocked = format!("/api/library/v1/admin/wardrobe-preview/BLOCK/{operation}");
     assert_eq!(
         server
-            .request(Method::GET, &blocked, 21)
+            .request(Method::GET, &blocked, PLAYER)
             .send()
             .await
             .unwrap()
@@ -172,7 +174,7 @@ async fn administrator_preview_is_source_bound_and_does_not_expose_blocked_wardr
         .unwrap()
         .contains("no-store"));
     assert_eq!(response.bytes().await.unwrap().as_ref(), bytes.as_slice());
-    upload(&server, 21, &repack(&bytes, true)).await;
+    upload(&server, PLAYER, &repack(&bytes, true)).await;
     assert_eq!(
         request(Method::GET, &path).send().await.unwrap().status(),
         409
