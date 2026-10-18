@@ -207,6 +207,12 @@ name/authors. Figura server-readable metadata is SERVER_VERIFIED only after
 the server compares the prepared package; encrypted YSM metadata is explicitly
 CLIENT_EXTRACTED. Authors are provenance text, not proof of ownership.
 
+For server-readable packages, compare the complete NBT `metadata/authors` text
+with the submitted author entries joined by `\n`. Entries may themselves contain
+newlines; splitting the wire text cannot recover array boundaries. Preserve the
+submitted entries and their multiline credits in catalog metadata after this
+comparison; do not split or deduplicate their internal lines for verification.
+
 Hash kinds: RAW_SHA256 (exact distribution bytes), NBT_SHA256 (server-validated
 uncompressed NBT bytes, independent of gzip wrapping),
 YSM_CIPHERTEXT_SHA256 (validated embedded original ciphertext), and

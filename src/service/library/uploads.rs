@@ -270,7 +270,7 @@ impl CommitContext {
         let expected = &self.reservation.request.metadata;
         if inspected.model_type != ModelType::ModelYsmEncrypted
             && (inspected.internal_name.as_ref() != Some(&expected.internal_name)
-                || inspected.authors != expected.authors)
+                || inspected.authors_text != expected.authors.join("\n"))
         {
             return Err(ErrorCode::InvalidMessage);
         }

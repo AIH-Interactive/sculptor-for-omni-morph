@@ -10,6 +10,7 @@ use std::sync::Arc;
 use tokio::sync::RwLock;
 
 mod admin;
+mod credits;
 mod catalog;
 mod recycle;
 mod reports;

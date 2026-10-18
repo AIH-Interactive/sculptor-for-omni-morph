@@ -65,6 +65,7 @@ pub struct PackageIdentity {
     pub ciphertext_sha256: Option<Vec<u8>>,
     pub internal_name: Option<String>,
     pub authors: Vec<String>,
+    pub authors_text: String,
 }
 
 #[cfg(test)]
@@ -157,7 +158,7 @@ struct Scanner<R> {
     encrypted_forbidden_field: bool,
     nbt_hash: ring::digest::Context,
     internal_name: Option<String>,
-    authors: Vec<String>,
+    authors_text: String,
 }
 
 pub fn inspect(path: &Path) -> Result<PackageIdentity> {
@@ -180,7 +181,7 @@ fn inspect_with_budget(source: impl Read, budget: u64) -> Result<PackageIdentity
         encrypted_forbidden_field: false,
         nbt_hash: ring::digest::Context::new(&ring::digest::SHA256),
         internal_name: None,
-        authors: Vec::new(),
+        authors_text: String::new(),
     };
     if scanner.byte()? != 10 {
         return Err(ErrorCode::InvalidMessage);
@@ -217,13 +218,25 @@ fn inspect_with_budget(source: impl Read, budget: u64) -> Result<PackageIdentity
         }
         ModelType::ModelFigura
     };
+    let authors = scanner
+        .authors_text
+        .split('\n')
+        .map(str::trim)
+        .filter(|author| !author.is_empty())
+        .fold(Vec::new(), |mut authors, author| {
+            if !authors.iter().any(|existing| existing == author) {
+                authors.push(author.to_owned());
+            }
+            authors
+        });
     Ok(PackageIdentity {
         model_type,
         content_hash: scanner.content_hash,
         nbt_sha256: scanner.nbt_hash.finish().as_ref().to_vec(),
         ciphertext_sha256: scanner.ciphertext_hash,
         internal_name: scanner.internal_name,
-        authors: scanner.authors,
+        authors,
+        authors_text: scanner.authors_text,
     })
 }
 
@@ -347,16 +360,9 @@ impl<R: Read> Scanner<R> {
                 match path {
                     "metadata/name" => self.internal_name = Some(value),
                     "metadata/authors" => {
-                        self.authors = value
-                            .split('\n')
-                            .map(str::trim)
-                            .filter(|author| !author.is_empty())
-                            .fold(Vec::new(), |mut authors, author| {
-                                if !authors.iter().any(|existing| existing == author) {
-                                    authors.push(author.to_owned());
-                                }
-                                authors
-                            });
+                        // Figura flattens author entries with newlines. An entry may itself
+                        // contain newlines, so splitting cannot recover the original array.
+                        self.authors_text = value;
                     }
                     "metadata/format" => self.format = value,
                     "ysm/container_kind" if value == "YSGP" => self.encrypted = true,
