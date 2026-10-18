@@ -175,6 +175,7 @@ async fn legacy_http_baseline() {
         .route("/api/", get(crate::check_auth))
         .route("/ws", get(crate::api::figura::ws))
         .merge(crate::api::protobuf::router(true))
+        .merge(crate::api::library::router(state.clone()))
         .with_state(state.clone())
         .layer(axum::middleware::from_fn_with_state(
             capture.clone(),
@@ -210,8 +211,6 @@ async fn legacy_http_baseline() {
         .json()
         .await
         .unwrap();
-    // Legacy self-profile probes the one-shot temp slot before the persistent slot.
-    assert_eq!(initial_profile["equipped"], serde_json::json!([]));
     let profile: serde_json::Value = client
         .get(format!("{base}/api/{owner}"))
         .header("token", "baseline-token")
@@ -233,6 +232,8 @@ async fn legacy_http_baseline() {
         profile["equipped"],
         serde_json::json!([{"id":"avatar","owner":owner.to_string(),"hash":legacy_hash}])
     );
+    // An absent one-shot temp slot must not hide the persistent equipment on the first refresh.
+    assert_eq!(initial_profile["equipped"], profile["equipped"]);
     let downloaded = client
         .get(format!("{base}/api/{owner}/avatar"))
         .header("token", "baseline-token")

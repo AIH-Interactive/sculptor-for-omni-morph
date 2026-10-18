@@ -51,6 +51,7 @@ pub async fn user_info(
     let use_temp = !library_equipped
         && !request_temp_state
         && request_self_avatar
+        && path.is_file()
         && !outdated;
     let avatar_file = if use_temp {
         tracing::info!("Profile {} is self requesting and it is temp", uuid);

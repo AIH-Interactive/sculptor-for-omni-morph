@@ -61,6 +61,62 @@ async fn avatar(server: &Server, owner: u128, observer: u128) -> reqwest::Respon
 }
 
 #[tokio::test]
+async fn wardrobe_upload_survives_first_self_refresh_without_a_temporary_model() {
+    let server = Server::start().await;
+    let packages = [
+        figura_package(),
+        crate::service::package::tests::fixture(false, false).0,
+        crate::service::package::tests::fixture(true, false).0,
+    ];
+    for (index, bytes) in packages.into_iter().enumerate() {
+        // Legacy HTTP fixtures share the process-wide avatar directory.
+        let player = 21_002 + index as u128;
+        upload(&server, player, &bytes).await;
+        let owner = Uuid::from_u128(player);
+        assert!(!crate::service::resource::legacy_read_path(owner, true).exists());
+        let equipped = server.state.storage.equipped(owner).unwrap();
+        assert!(equipped.primary.is_some(), "upload persisted the equipment");
+
+        for refresh in 1..=3 {
+            let response = server
+                .client
+                .get(format!("{}/api/{owner}", server.base))
+                .header("token", format!("synthetic-token-{player}"))
+                .header("x-omnimorph-models", "ysm")
+                .send()
+                .await
+                .unwrap();
+            assert_eq!(response.status(), 200);
+            let profile = response.json::<Value>().await.unwrap();
+            assert_eq!(
+                profile["equipped"].as_array().unwrap().len(),
+                1,
+                "model type {} self refresh {refresh} must retain the uploaded equipment",
+                index + 1
+            );
+            assert!(
+                !server.state.user_manager.request_temp_state(owner, false),
+                "a missing temporary model must not consume the one-shot preview state"
+            );
+            let response = server
+                .client
+                .get(format!("{}/api/{owner}/avatar", server.base))
+                .header("token", format!("synthetic-token-{player}"))
+                .header("x-omnimorph-models", "ysm")
+                .send()
+                .await
+                .unwrap();
+            assert_eq!(response.status(), 200);
+            assert_eq!(response.bytes().await.unwrap().as_ref(), bytes.as_slice());
+        }
+
+        tokio::fs::remove_file(crate::service::resource::legacy_path(owner, false))
+            .await
+            .unwrap();
+    }
+}
+
+#[tokio::test]
 async fn administrator_preview_is_source_bound_and_does_not_expose_blocked_wardrobe_to_players() {
     // Legacy HTTP fixtures share the process-wide avatar directory; reserve this player's files.
     const PLAYER: u128 = 21_001;
