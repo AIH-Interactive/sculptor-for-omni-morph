@@ -63,11 +63,12 @@ ASSETS_FOLDER（默认 data/assets）、LOGS_FOLDER（默认 logs）、RUST_LOG�
 ## 下载 Windows / Linux 可执行文件
 
 仓库的 [Backend executables](https://github.com/AIH-Interactive/sculptor-for-omni-morph/actions/workflows/backend-build.yml)
-工作流在 main/master 推送、版本标签推送和拉取请求时构建，也支持手动 Run workflow。
+工作流通过手动 Run workflow 触发。
 进入一次成功运行的 Summary，在 Artifacts 或下载链接中选择：
 
 - `omni-morph-backend-windows-x86_64.zip`：Windows x86_64，内含 `sculptor.exe`。
 - `omni-morph-backend-linux-x86_64.tar.gz`：Linux x86_64 GNU，内含保留执行权限的 `sculptor`。
+- `omni-morph-backend-linux-aarch64.tar.gz`：Linux ARM64 GNU，内含保留执行权限的 `sculptor`。
 
 产物保留 30 天，包含示例配置、部署说明、许可证与可执行文件的 SHA-256。
 首次解压后复制 `Config.example.toml` 为 `Config.toml`，编辑配置后，在解压目录运行
@@ -76,7 +77,7 @@ Linux 构建使用 Ubuntu 22.04（glibc 2.35 / OpenSSL 3）；运行环境需要
 自定义配置可设置 `RUST_CONFIG`，规则与上面的源码启动方式相同。
 下载 [Actions Artifacts](https://docs.github.com/en/actions/tutorials/store-and-share-data) 需要登录 GitHub。
 
-旧 Rust/Release/Docker workflow 已替换为这一份原生双平台构建；每个平台先测试，
+旧 Rust/Release/Docker workflow 已替换为这一份 Windows x86_64、Linux x86_64 和 Linux ARM64 原生构建；每个平台先测试，
 再 `cargo build --locked --release --target ...`，最后上传可直接下载的压缩包。
 本地可用 PowerShell 7 执行相同脚本（仅支持本机平台）：
 
@@ -84,7 +85,8 @@ Linux 构建使用 Ubuntu 22.04（glibc 2.35 / OpenSSL 3）；运行环境需要
 & ./.github/scripts/build-backend.ps1 -Target x86_64-pc-windows-msvc
 ```
 
-Linux 对应 target 为 `x86_64-unknown-linux-gnu`。构建日志位于 `build.log`；
+Linux x86_64 对应 target 为 `x86_64-unknown-linux-gnu`，ARM64 为 `aarch64-unknown-linux-gnu`。
+ARM64 使用 `ubuntu-22.04-arm` runner 原生测试和编译。构建日志位于 `build.log`；
 构建失败时工作流另行上传日志，缺失可执行文件或上传包会令工作流失败。
 
 ## 本地与正式连接

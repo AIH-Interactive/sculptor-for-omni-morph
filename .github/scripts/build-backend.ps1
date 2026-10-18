@@ -1,7 +1,7 @@
 [CmdletBinding()]
 param(
     [Parameter(Mandatory)]
-    [ValidateSet('x86_64-pc-windows-msvc', 'x86_64-unknown-linux-gnu')]
+    [ValidateSet('x86_64-pc-windows-msvc', 'x86_64-unknown-linux-gnu', 'aarch64-unknown-linux-gnu')]
     [string]$Target
 )
 
@@ -31,7 +31,8 @@ try {
     Invoke-CargoLogged -CargoArguments @('build', '--locked', '--release', '--target', $Target)
 
     $platformName = if ($windowsTarget) { 'windows' } else { 'linux' }
-    $bundleName = "omni-morph-backend-$platformName-x86_64"
+    $architecture = $Target.Split('-')[0]
+    $bundleName = "omni-morph-backend-$platformName-$architecture"
     $binaryName = if ($windowsTarget) { 'sculptor.exe' } else { 'sculptor' }
     $binary = Join-Path $repositoryRoot "target/$Target/release/$binaryName"
     if (-not (Test-Path -LiteralPath $binary -PathType Leaf) -or (Get-Item -LiteralPath $binary).Length -eq 0) {
