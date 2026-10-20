@@ -36,3 +36,12 @@ pub async fn outfit(
         blocking(move || state.storage.library_collection_outfit(actor, &id, &input)).await?,
     )
 }
+
+pub async fn remove(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    headers: HeaderMap,
+) -> Result<Response> {
+    let actor = actor(&state, &headers).await?;
+    json_response(blocking(move || state.storage.library_collection_remove(actor, &id)).await?)
+}

@@ -11,6 +11,67 @@ async fn members(server: &Server, player: u128) -> Value {
 }
 
 #[tokio::test]
+async fn removing_members_is_account_scoped_repeatable_and_keeps_the_original_model() {
+    let mut server = Server::start().await;
+    let (id, _) = server.upload_model("PRIVATE").await;
+    let database =
+        rusqlite::Connection::open(server._directory.path().join("metadata.sqlite3")).unwrap();
+    // An old member may no longer have permission to read the original private model.
+    database.execute(
+        "INSERT INTO library_collection(player_uuid, model_id, joined_at, join_source, in_outfit)
+         SELECT ?1, model_id, joined_at, 'DOWNLOAD', 1 FROM library_collection WHERE model_id = ?2",
+        rusqlite::params![Uuid::from_u128(2).to_string(), id],
+    ).unwrap();
+    let path = format!("/api/library/v1/collection/{id}");
+    assert_eq!(
+        server
+            .request(Method::DELETE, &path, 3)
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        200
+    );
+    assert_eq!(members(&server, 2).await["total"], 1);
+    assert!(members(&server, 2).await["items"][0]["model"].is_null());
+    for _ in 0..2 {
+        assert_eq!(
+            server
+                .request(Method::DELETE, &path, 2)
+                .send()
+                .await
+                .unwrap()
+                .status(),
+            200
+        );
+    }
+    assert_eq!(members(&server, 2).await["total"], 0);
+    assert_eq!(members(&server, 1).await["total"], 1);
+    assert_eq!(
+        server
+            .request(Method::GET, &format!("/api/library/v1/models/{id}"), 1)
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        200
+    );
+    assert_eq!(
+        server
+            .request(Method::DELETE, "/api/library/v1/collection/not-a-uuid", 2)
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        400
+    );
+    drop(database);
+    super::lifecycle::restart(&mut server).await;
+    assert_eq!(members(&server, 2).await["total"], 0);
+    assert_eq!(members(&server, 1).await["total"], 1);
+}
+
+#[tokio::test]
 async fn published_uploads_are_members_but_outfits_and_other_accounts_are_independent() {
     let mut server = Server::start().await;
     let (id, _) = server.upload_model("PRIVATE").await;

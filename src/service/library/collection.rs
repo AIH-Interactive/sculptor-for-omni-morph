@@ -21,6 +21,20 @@ pub struct OutfitInput {
 }
 
 impl Storage {
+    /// Forget only the authenticated player's membership, including unavailable models.
+    pub fn library_collection_remove(&self, actor: Actor, id: &str) -> Result<Value> {
+        super::super::resource::operation_id(id)?;
+        self.library_transaction(|transaction| {
+            transaction
+                .execute(
+                    "DELETE FROM library_collection WHERE player_uuid = ?1 AND model_id = ?2",
+                    params![actor.uuid.to_string(), id],
+                )
+                .map_err(sql_error)?;
+            Ok(json!({"model_id": id, "joined": false}))
+        })
+    }
+
     pub fn library_collection(&self, actor: Actor, query: &CollectionQuery) -> Result<Value> {
         let page = query.page.unwrap_or(1);
         let size = query.page_size.unwrap_or(32);
