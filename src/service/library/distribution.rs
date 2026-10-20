@@ -262,6 +262,21 @@ pub(super) fn resource_access(
     if observer.uuid == owner {
         return Ok(());
     }
+    // A public catalog entry may still be hidden by this particular wearer.
+    // Canonical downloads above continue to follow the catalog's own permissions.
+    if item.policy.visibility == Visibility::Public {
+        let hidden: bool = database
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM library_wardrobe_settings WHERE owner_uuid = ?1
+             AND asset_id = ?2 AND asset_revision = ?3 AND show_equipment = 0)",
+                params![owner.to_string(), asset, library::sql_integer(revision)?],
+                |row| row.get(0),
+            )
+            .map_err(sql_error)?;
+        if hidden {
+            return Err(ErrorCode::NotFound);
+        }
+    }
     let show_private: bool = database
         .query_row(
             "SELECT EXISTS(SELECT 1 FROM equipment e JOIN library_equipment_settings s

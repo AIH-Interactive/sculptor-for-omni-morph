@@ -780,3 +780,88 @@ async fn private_equipment_intent_defaults_closed_and_updates_without_opening_ca
         .unwrap();
     assert_eq!(download().send().await.unwrap().status(), 404);
 }
+
+#[tokio::test]
+async fn public_equipment_visibility_is_wearer_scoped_and_keeps_catalog_public() {
+    let server = Server::start().await;
+    let (id, _) = server.upload_model("PUBLIC").await;
+    let path = format!("/api/library/v1/models/{id}/equip");
+    let first = server
+        .request(Method::POST, &path, 1)
+        .json(&equip_input(0))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(first.status(), 200);
+    assert_profiles(&server, 2, true).await;
+    let mut hide = equip_input(1);
+    hide["show_equipment"] = json!(false);
+    let hidden = server
+        .request(Method::POST, &path, 1)
+        .json(&hide)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(hidden.status(), 200);
+    assert_profiles(&server, 2, false).await;
+    assert_profiles(&server, 1, true).await;
+    let session = server
+        .request(Method::GET, "/api/library/v1/session", 1)
+        .send()
+        .await
+        .unwrap()
+        .json::<Value>()
+        .await
+        .unwrap();
+    assert_eq!(session["show_equipment"], false);
+    assert_eq!(session["equipment_model_id"], id);
+    assert_eq!(
+        server
+            .request(Method::GET, &format!("/api/library/v1/models/{id}"), 2)
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        200
+    );
+    // A different wearer controls their own copy even without uploader permissions.
+    let mut show = equip_input(0);
+    show["show_equipment"] = json!(true);
+    show["show_private_equipment"] = json!(true);
+    assert_eq!(
+        server
+            .request(Method::POST, &path, 2)
+            .json(&show)
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        200
+    );
+    assert_profiles(&server, 2, false).await;
+    let mut reopen = equip_input(2);
+    reopen["show_equipment"] = json!(true);
+    assert_eq!(
+        server
+            .request(Method::POST, &path, 1)
+            .json(&reopen)
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        200
+    );
+    assert_profiles(&server, 2, true).await;
+    // A stale visibility request cannot replace a more recent equipment choice.
+    assert_eq!(
+        server
+            .request(Method::POST, &path, 1)
+            .json(&hide)
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        200
+    );
+    assert_profiles(&server, 2, true).await;
+}

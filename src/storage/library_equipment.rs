@@ -2,9 +2,9 @@
 use super::*;
 use crate::service::{
     library::{model, require_action, sql_error},
-    library_policy::{Actor, Moderation},
+    library_policy::{Actor, Moderation, Visibility},
 };
-use rusqlite::{OptionalExtension, params};
+use rusqlite::{params, OptionalExtension};
 
 #[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -14,6 +14,9 @@ pub(crate) struct LibraryEquip {
     pub expected_equipment_revision: u64,
     #[serde(default)]
     pub show_private_equipment: bool,
+    /// General equipment visibility; absent preserves legacy public/default-private behavior.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub show_equipment: Option<bool>,
 }
 
 impl Storage {
@@ -22,25 +25,31 @@ impl Storage {
             let state = database.query_row(
                 "SELECT o.revision, b.source_model_id, b.source_revision,
                  CASE WHEN m.moderation_status = 'ACTIVE' AND m.visibility = 'PRIVATE'
-                 THEN COALESCE(s.show_private_equipment, 0) ELSE 0 END
+                 THEN COALESCE(s.show_private_equipment, 0) ELSE 0 END,
+                 CASE WHEN m.moderation_status != 'ACTIVE' THEN 0
+                      WHEN m.visibility = 'PRIVATE' THEN COALESCE(s.show_private_equipment, 0)
+                      WHEN m.visibility = 'PUBLIC' THEN COALESCE(w.show_equipment, 1) ELSE 0 END
                  FROM owners o LEFT JOIN equipment e ON e.owner_uuid = o.uuid AND e.slot = 'primary'
                  LEFT JOIN library_resource_bindings b ON b.resource_owner = e.owner_uuid
                    AND b.asset_id = e.asset_id AND b.revision = e.revision
                  LEFT JOIN library_equipment_settings s ON s.resource_owner = e.owner_uuid
                    AND s.asset_id = e.asset_id AND s.revision = e.revision
                  LEFT JOIN library_effective_models m ON m.model_id = b.source_model_id
+                 LEFT JOIN library_wardrobe_settings w ON w.owner_uuid = e.owner_uuid
+                   AND w.asset_id = e.asset_id AND w.asset_revision = e.revision
                  WHERE o.uuid = ?1", [owner.to_string()], |row| {
                     Ok(serde_json::json!({
                         "equipment_revision": row.get::<_, i64>(0)?,
                         "equipment_model_id": row.get::<_, Option<String>>(1)?,
                         "equipment_model_revision": row.get::<_, Option<i64>>(2)?,
                         "show_private_equipment": row.get::<_, bool>(3)?,
+                        "show_equipment": row.get::<_, bool>(4)?,
                     }))
                 },
             ).optional().map_err(sql_error)?;
             Ok(state.unwrap_or_else(|| serde_json::json!({
                 "equipment_revision": 0, "equipment_model_id": null,
-                "equipment_model_revision": null, "show_private_equipment": false,
+                "equipment_model_revision": null, "show_private_equipment": false, "show_equipment": false,
             })))
         })
     }
@@ -63,7 +72,8 @@ impl Storage {
             if item.summary.revision != library::sql_integer(input.model_revision)? {
                 return Err(ErrorCode::Conflict);
             }
-            if input.show_private_equipment
+            if item.policy.visibility == Visibility::Private
+                && input.show_equipment.unwrap_or(input.show_private_equipment)
                 && (actor.uuid != item.policy.uploader
                     || item.policy.moderation != Moderation::Active)
             {
@@ -180,7 +190,8 @@ impl Storage {
                 if item.summary.revision != library::sql_integer(input.model_revision)? {
                     return Err(ErrorCode::Conflict);
                 }
-                if input.show_private_equipment
+                if item.policy.visibility == Visibility::Private
+                    && input.show_equipment.unwrap_or(input.show_private_equipment)
                     && (actor.uuid != item.policy.uploader
                         || item.policy.moderation != Moderation::Active)
                 {
@@ -206,8 +217,16 @@ impl Storage {
                             "INSERT INTO library_equipment_settings VALUES (?1, ?2, 1, ?3)
                              ON CONFLICT(resource_owner, asset_id, revision)
                              DO UPDATE SET show_private_equipment = excluded.show_private_equipment",
-                            params![actor.uuid.to_string(), alias_id, input.show_private_equipment],
+                            params![actor.uuid.to_string(), alias_id, input.show_equipment.unwrap_or(input.show_private_equipment)],
                         ).map_err(sql_error)?;
+                        if let Some(showing) = input.show_equipment {
+                            transaction.execute(
+                                "INSERT INTO library_wardrobe_settings VALUES (?1, ?2, 1, ?3)
+                                 ON CONFLICT(owner_uuid, asset_id, asset_revision)
+                                 DO UPDATE SET show_equipment = excluded.show_equipment",
+                                params![actor.uuid.to_string(), alias_id, showing],
+                            ).map_err(sql_error)?;
+                        }
                         Ok(result.encode_to_vec())
                     },
                 )?;
