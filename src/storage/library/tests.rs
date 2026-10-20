@@ -91,7 +91,8 @@ fn version_three_upgrade_preserves_policy_and_backs_up_before_management_tables(
     drop(storage);
     let database = Connection::open(&path).unwrap();
     database.execute_batch(
-        "DROP VIEW library_effective_models; DROP VIEW library_hash_blocked_models;
+        "DROP TABLE library_collection;
+         DROP VIEW library_effective_models; DROP VIEW library_hash_blocked_models;
          DROP VIEW library_active_blocked_hashes; DROP TABLE library_wardrobe_blocks;
          DROP TABLE library_wardrobe_settings; DROP TABLE library_reports; DROP TABLE library_appeals;"
     ).unwrap();
@@ -129,7 +130,19 @@ fn version_two_equipment_settings_default_closed_and_survive_restart() {
     drop(storage);
     let database = Connection::open(&path).unwrap();
     database
-        .execute_batch("DROP VIEW library_effective_models; DROP VIEW library_hash_blocked_models; DROP VIEW library_active_blocked_hashes; DROP TABLE library_wardrobe_blocks; DROP TABLE library_wardrobe_settings; DROP TABLE library_appeals; DROP TABLE library_equipment_settings; DROP TABLE library_verified_blobs; DROP TABLE library_reports; PRAGMA user_version = 2;")
+        .execute_batch(
+            "DROP TABLE library_collection;
+             DROP VIEW library_effective_models;
+             DROP VIEW library_hash_blocked_models;
+             DROP VIEW library_active_blocked_hashes;
+             DROP TABLE library_wardrobe_blocks;
+             DROP TABLE library_wardrobe_settings;
+             DROP TABLE library_appeals;
+             DROP TABLE library_equipment_settings;
+             DROP TABLE library_verified_blobs;
+             DROP TABLE library_reports;
+             PRAGMA user_version = 2;",
+        )
         .unwrap();
     drop(database);
 
