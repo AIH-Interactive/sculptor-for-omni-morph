@@ -326,6 +326,14 @@ impl CommitContext {
                     )
                     .map_err(sql_error)?;
                 ensure_uploader_grant(transaction, id, self.actor.uuid)?;
+                if !banned {
+                    transaction.execute(
+                        "INSERT OR IGNORE INTO library_collection
+                         (player_uuid, model_id, joined_at, join_source)
+                         VALUES (?1, ?2, ?3, 'UPLOAD')",
+                        params![self.actor.uuid.to_string(), id, library::sql_integer(now_seconds())?],
+                    ).map_err(sql_error)?;
+                }
                 if banned {
                     library::set_blocked(
                         transaction,

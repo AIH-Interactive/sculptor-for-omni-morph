@@ -4,6 +4,7 @@ mod admin_preview;
 mod reports;
 mod images;
 mod models;
+mod collection;
 mod transfers;
 mod uploads;
 mod wardrobe;
@@ -245,6 +246,9 @@ pub(crate) async fn actor_identity(state: &AppState, headers: &HeaderMap) -> Res
 
 pub fn router(state: AppState) -> Router<AppState> {
     Router::new()
+        .route("/api/library/v1/collection", get(collection::list))
+        .route("/api/library/v1/collection/:id", put(collection::join))
+        .route("/api/library/v1/collection/:id/outfit", put(collection::outfit))
         .route("/api/library/v1/models/:id/equip", post(models::equip))
         .route(
             "/api/library/v1/models/:id/transfers",

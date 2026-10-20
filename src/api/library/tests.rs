@@ -20,6 +20,7 @@ mod equipment;
 mod images;
 mod lifecycle;
 mod transfers;
+mod collection;
 mod wardrobe;
 mod subscriptions;
 
