@@ -101,6 +101,35 @@ preview_cache_seconds = 3600 # Preview cache lifetime in seconds; clients still 
 # This list adds extra categories; it cannot remove or replace the built-ins.
 categories = []
 
+## Outfit-specific limits, separate from model-library and wardrobe limits.
+## Missing keys keep the defaults below. Zero disables count-based capacities.
+## Values may tighten v1 client/protocol safety ceilings; invalid values fail config loading.
+## Existing script/particle/sound/texture permissions still apply to the entire outfit.
+[outfit.limits]
+max_instances = 32
+max_virtual_anchors = 128
+max_depth = 64
+max_resource_nodes = 8192
+max_total_nodes = 32768
+max_bone_overrides = 1024
+max_json_bytes = 65536
+max_trails = 8
+max_trail_samples = 256
+max_controls = 128
+max_lua_state_entries = 128
+max_state_string_bytes = 512
+max_presets = 64
+max_display_ordinals = 256
+max_exported_bones = 128
+position_limit = 4096.0
+rotation_limit = 36000.0
+min_scale = 0.001
+max_scale = 64.0
+dynamic_lighting_enabled = true # Per-particle dynamic light defaults off; server may forbid it entirely.
+max_dynamic_lights = 8 # Aggregate per wearer, independent of particle full-bright.
+max_dynamic_light_level = 15
+max_dynamic_light_radius = 16.0 # Blocks; per-particle radius is also bounded by this.
+
 ## Generate an offline hash with: python tools/library_admin_hash.py
 ## This is a shape example only. Replace placeholders before uncommenting.
 ## Changes reload through the existing config watcher; sessions recheck fingerprints.

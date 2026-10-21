@@ -76,8 +76,14 @@ impl Storage {
         })
     }
 
-    pub fn outfit_save_preset(&self, owner: Uuid, input: &PresetInput) -> Result<Preset> {
-        input.configuration.validate()?;
+    pub fn outfit_save_preset(
+        &self,
+        owner: Uuid,
+        input: &PresetInput,
+        limits: &crate::service::outfit_limits::OutfitLimits,
+    ) -> Result<Preset> {
+        limits.validate()?;
+        input.configuration.validate_with_limits(limits)?;
         crate::service::library::text(&input.name, 96, false)?;
         let fingerprint = super::sha256(
             &serde_json::to_vec(&("outfit-preset", input))
@@ -97,7 +103,7 @@ impl Storage {
                         "SELECT count(*) FROM outfit_presets WHERE owner_uuid = ?1",
                         [owner.to_string()], |row| row.get(0),
                     ).map_err(sql_error)?;
-                    if count >= 64 {
+                    if count as usize >= limits.max_presets {
                         return Err(ErrorCode::LimitExceeded);
                     }
                 }
@@ -144,20 +150,47 @@ mod tests {
             name: "星翼".into(),
             configuration: OutfitConfig::default(),
         };
-        let saved = storage.outfit_save_preset(owner, &input).unwrap();
-        assert_eq!(saved, storage.outfit_save_preset(owner, &input).unwrap());
+        let saved = storage
+            .outfit_save_preset(
+                owner,
+                &input,
+                &crate::service::outfit_limits::OutfitLimits::default(),
+            )
+            .unwrap();
+        assert_eq!(
+            saved,
+            storage
+                .outfit_save_preset(
+                    owner,
+                    &input,
+                    &crate::service::outfit_limits::OutfitLimits::default()
+                )
+                .unwrap()
+        );
         assert_eq!(
             storage.outfit_preset(other, input.preset_id).unwrap_err(),
             ErrorCode::NotFound
         );
         input.name = "conflicting retry".into();
         assert_eq!(
-            storage.outfit_save_preset(owner, &input).unwrap_err(),
+            storage
+                .outfit_save_preset(
+                    owner,
+                    &input,
+                    &crate::service::outfit_limits::OutfitLimits::default()
+                )
+                .unwrap_err(),
             ErrorCode::Conflict
         );
         input.operation_id = Uuid::from_u128(5);
         assert_eq!(
-            storage.outfit_save_preset(owner, &input).unwrap_err(),
+            storage
+                .outfit_save_preset(
+                    owner,
+                    &input,
+                    &crate::service::outfit_limits::OutfitLimits::default()
+                )
+                .unwrap_err(),
             ErrorCode::Conflict
         );
         drop(storage);

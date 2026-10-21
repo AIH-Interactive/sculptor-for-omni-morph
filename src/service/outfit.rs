@@ -1,4 +1,5 @@
 //! Versioned JSON outfit contract. This module never executes model scripts.
+use super::outfit_limits::OutfitLimits;
 use crate::protocol::v1::ErrorCode;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
@@ -39,9 +40,14 @@ pub struct AccessoryMetadata {
 
 impl AccessoryMetadata {
     pub fn validate(&self) -> Result<()> {
+        self.validate_with_limits(&OutfitLimits::default())
+    }
+
+    pub fn validate_with_limits(&self, limits: &OutfitLimits) -> Result<()> {
+        limits.validate()?;
         if self.schema_version != 1
             || self.supported_bases.len() > 3
-            || self.exported_bones.len() > 128
+            || self.exported_bones.len() > limits.max_exported_bones
             || (!self.has_bones
                 && (self.display_bones || self.edit_bones || !self.exported_bones.is_empty()))
             || !matches!(
@@ -54,7 +60,7 @@ impl AccessoryMetadata {
         super::library::text(&self.category, 64, false)?;
         super::library::text(&self.cosmetic_anchor, 128, true)?;
         super::library::text(&self.skeleton_revision, 128, true)?;
-        self.default_transform.validate()?;
+        self.default_transform.validate_with_limits(limits)?;
         if self.has_bones {
             crate::storage::library::validate_hash("RAW_SHA256", &self.skeleton_hash)?;
         } else if !self.skeleton_hash.is_empty() {
@@ -67,7 +73,7 @@ impl AccessoryMetadata {
             }
         }
         for bone in &self.exported_bones {
-            bone.validate()?;
+            bone.validate_with_limits(limits)?;
             // Resource declarations never embed a player's instance UUID.
             if bone.instance_id.is_some() || bone.skeleton_hash != self.skeleton_hash {
                 return Err(ErrorCode::InvalidMessage);
@@ -168,19 +174,19 @@ impl Default for Transform {
 }
 
 impl Transform {
-    pub fn validate(&self) -> Result<()> {
+    pub fn validate_with_limits(&self, limits: &OutfitLimits) -> Result<()> {
         if self
             .position
             .iter()
-            .any(|v| !v.is_finite() || v.abs() > 4096.0)
+            .any(|v| !v.is_finite() || v.abs() > limits.position_limit)
             || self
                 .rotation
                 .iter()
-                .any(|v| !v.is_finite() || v.abs() > 36000.0)
+                .any(|v| !v.is_finite() || v.abs() > limits.rotation_limit)
             || self
                 .scale
                 .iter()
-                .any(|v| !v.is_finite() || !(0.001..=64.0).contains(v))
+                .any(|v| !v.is_finite() || !(limits.min_scale..=limits.max_scale).contains(v))
         {
             return Err(ErrorCode::InvalidMessage);
         }
@@ -205,8 +211,8 @@ pub struct BoneRef {
 }
 
 impl BoneRef {
-    pub fn validate(&self) -> Result<()> {
-        if self.path.is_empty() || self.path.len() > MAX_DEPTH {
+    pub fn validate_with_limits(&self, limits: &OutfitLimits) -> Result<()> {
+        if self.path.is_empty() || self.path.len() > limits.max_depth {
             return Err(ErrorCode::InvalidMessage);
         }
         crate::storage::library::validate_hash("RAW_SHA256", &self.skeleton_hash)?;
@@ -317,15 +323,20 @@ impl Default for OutfitConfig {
 
 impl OutfitConfig {
     pub fn validate(&self) -> Result<()> {
+        self.validate_with_limits(&OutfitLimits::default())
+    }
+
+    pub fn validate_with_limits(&self, limits: &OutfitLimits) -> Result<()> {
+        limits.validate()?;
         if self.schema_version != 1
             || self.revision > i64::MAX as u64
-            || self.instances.len() > MAX_INSTANCES
-            || self.virtual_anchors.len() > MAX_ANCHORS
-            || self.display_ordinals.len() > 256
+            || self.instances.len() > limits.max_instances
+            || self.virtual_anchors.len() > limits.max_virtual_anchors
+            || self.display_ordinals.len() > limits.max_display_ordinals
             || serde_json::to_vec(self)
                 .map_err(|_| ErrorCode::InvalidMessage)?
                 .len()
-                > MAX_JSON_BYTES
+                > limits.max_json_bytes
         {
             return Err(ErrorCode::InvalidMessage);
         }
@@ -350,8 +361,8 @@ impl OutfitConfig {
                 return Err(ErrorCode::InvalidMessage);
             }
             super::library::text(&anchor.name, 128, false)?;
-            anchor.parent.validate()?;
-            anchor.transform.validate()?;
+            anchor.parent.validate_with_limits(limits)?;
+            anchor.transform.validate_with_limits(limits)?;
             if anchor
                 .parent
                 .instance_id
@@ -365,7 +376,7 @@ impl OutfitConfig {
         let mut overrides = 0;
         for instance in &self.instances {
             instance.resource.validate()?;
-            instance.transform.validate()?;
+            instance.transform.validate_with_limits(limits)?;
             let identity = instance.resource.identity();
             if instance.display_ordinal == 0
                 || instance.display_ordinal > i32::MAX as u32
@@ -377,8 +388,11 @@ impl OutfitConfig {
             {
                 return Err(ErrorCode::InvalidMessage);
             }
-            for values in [&instance.controls, &instance.lua_state] {
-                if values.len() > 128 {
+            for (values, maximum) in [
+                (&instance.controls, limits.max_controls),
+                (&instance.lua_state, limits.max_lua_state_entries),
+            ] {
+                if values.len() > maximum {
                     return Err(ErrorCode::InvalidMessage);
                 }
                 for (key, value) in values {
@@ -386,19 +400,21 @@ impl OutfitConfig {
                     match value {
                         serde_json::Value::Bool(_) => {}
                         serde_json::Value::Number(n) if n.as_f64().is_some_and(f64::is_finite) => {}
-                        serde_json::Value::String(s) => super::library::text(s, 512, true)?,
+                        serde_json::Value::String(s) => {
+                            super::library::text(s, limits.max_state_string_bytes, true)?
+                        }
                         _ => return Err(ErrorCode::InvalidMessage),
                     }
                 }
             }
             overrides += instance.bone_overrides.len();
-            if overrides > 1024 {
+            if overrides > limits.max_bone_overrides {
                 return Err(ErrorCode::InvalidMessage);
             }
             let mut paths = BTreeSet::new();
             for entry in &instance.bone_overrides {
-                entry.bone.validate()?;
-                entry.transform.validate()?;
+                entry.bone.validate_with_limits(limits)?;
+                entry.transform.validate_with_limits(limits)?;
                 if entry.bone.instance_id != Some(instance.instance_id)
                     || !paths.insert(
                         serde_json::to_string(&entry.bone)
@@ -416,14 +432,14 @@ impl OutfitConfig {
                     None
                 }
                 AnchorRef::BaseBone { bone } => {
-                    bone.validate()?;
+                    bone.validate_with_limits(limits)?;
                     if bone.instance_id.is_some() {
                         return Err(ErrorCode::InvalidMessage);
                     }
                     None
                 }
                 AnchorRef::AccessoryBone { bone } => {
-                    bone.validate()?;
+                    bone.validate_with_limits(limits)?;
                     Some(bone.instance_id.ok_or(ErrorCode::InvalidMessage)?)
                 }
                 AnchorRef::Virtual { anchor_id } => {
@@ -452,7 +468,7 @@ impl OutfitConfig {
             let mut visited = BTreeSet::new();
             let mut next = Some(id);
             while let Some(id) = next {
-                if !visited.insert(id) || visited.len() > MAX_DEPTH {
+                if !visited.insert(id) || visited.len() > limits.max_depth {
                     return Err(ErrorCode::InvalidMessage);
                 }
                 next = edges.get(id);
@@ -469,18 +485,18 @@ impl OutfitConfig {
     }
 }
 
-pub fn capabilities() -> serde_json::Value {
-    serde_json::json!({
+pub fn capabilities(limits: &OutfitLimits) -> serde_json::Value {
+    let mut value = serde_json::to_value(limits).expect("validated outfit limits");
+    let extension = serde_json::json!({
         "schema_version": 1, "configuration": true, "presets": true,
-        "apply": false, "events": false,
-        "max_instances": MAX_INSTANCES, "max_virtual_anchors": MAX_ANCHORS,
-        "max_depth": MAX_DEPTH, "max_resource_nodes": 8192, "max_total_nodes": 32768,
-        "max_bone_overrides": 1024, "max_json_bytes": MAX_JSON_BYTES,
-        "max_trails": 8, "max_trail_samples": 256,
-        "position_limit": 4096, "rotation_limit": 36000,
-        "min_scale": 0.001, "max_scale": 64,
-        "standard_anchors": STANDARD_ANCHORS
-    })
+        "apply": false, "events": false, "standard_anchors": STANDARD_ANCHORS,
+        "limits": limits
+    });
+    value
+        .as_object_mut()
+        .expect("limits object")
+        .extend(extension.as_object().expect("capability object").clone());
+    value
 }
 
 #[cfg(test)]

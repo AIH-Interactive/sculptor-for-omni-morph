@@ -13,3 +13,11 @@
 - 手工真实客户端/双客户端/GUI 均 MANUAL/PENDING；无渲染 PASS 声明。
 
 阶段二～六 NOT STARTED。每阶段提交并确认推送后才进入下阶段。build.log、spm-cloud/ 为初始未跟踪内容，不提交。
+
+## 阶段一用户补充：PASS（自动）
+
+- 上限统一位于 `Config.example.toml` 的 `[outfit.limits]`，缺省键兼容旧配置；无效范围/未知字段拒绝。
+- capabilities 从当前配置生成 `outfits_v1.limits`，保存预设和投稿声明消费同一预算；真实 HTTP 验证修改配置后限制生效、零容量、预设数量与 controls 拒绝。
+- 动态光源仅锁定契约/预算：全局允许开关、每穿戴者光源数、最高亮度、最大半径；实际粒子照明及设置项按用户要求在阶段三实现。
+- `cargo test` 124 PASS / 0 FAIL / 1 原有 ignored；追加动态光源边界用例后 `cargo test outfit_limits` 2 PASS。
+- `git diff --check` PASS；版本/冻结协议未变。人工动态照明验收 MANUAL/PENDING。

@@ -24,6 +24,8 @@ pub struct Config {
     pub advanced_users: HashMap<Uuid, AdvancedUsers>,
     #[serde(default, rename = "model_library")]
     pub model_library: crate::service::library_admin::LibraryConfig,
+    #[serde(default)]
+    pub outfit: crate::service::outfit_limits::OutfitSettings,
 }
 
 fn protobuf_default() -> bool {
@@ -157,6 +159,20 @@ fn configuration_error_summary(error: &toml::de::Error) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn outfit_limits_have_their_own_nested_config_section() {
+        let example = include_str!("../../Config.example.toml");
+        let config: Config = toml::from_str(example).unwrap();
+        assert_eq!(config.outfit.limits.max_instances, 32);
+        let config: Config =
+            toml::from_str(&example.replace("max_instances = 32", "max_instances = 4")).unwrap();
+        assert_eq!(config.outfit.limits.max_instances, 4);
+        assert!(
+            toml::from_str::<Config>(&example.replace("max_instances = 32", "max_instances = 33"))
+                .is_err()
+        );
+    }
 
     #[test]
     fn package_node_limit_defaults_and_unlimited_setting() {

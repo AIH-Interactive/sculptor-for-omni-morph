@@ -18,6 +18,9 @@ pub async fn reserve(
 ) -> Result<Response> {
     let actor = actor(&state, &headers).await?;
     let input = parse_json(body)?;
+    if let Some(metadata) = &input.metadata.accessory_metadata {
+        metadata.validate_with_limits(&state.config.read().await.outfit.limits)?;
+    }
     let filename = input.source_filename.to_ascii_lowercase();
     if !(filename.ends_with(".zip") || filename.ends_with(".ysm")) {
         return Err(LibraryError::unsupported());

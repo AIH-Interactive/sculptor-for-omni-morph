@@ -158,3 +158,88 @@ async fn accessory_purpose_survives_upload_and_is_not_legacy_base_equipment() {
         403
     );
 }
+
+#[tokio::test]
+async fn configured_limits_are_advertised_and_enforced_after_config_change() {
+    let server = Server::start().await;
+    let fixture: Value = serde_json::from_str(include_str!(
+        "../../../../tests/fixtures/outfit-v1/duplicate-instances.json"
+    ))
+    .unwrap();
+    let mut input = json!({"operation_id": library::random_id(), "preset_id": library::random_id(),
+        "expected_revision": 0, "name": "configured limits", "configuration": fixture});
+    {
+        let mut config = server.state.config.write().await;
+        config.outfit.limits.max_instances = 1;
+        config.outfit.limits.max_trails = 0;
+        config.outfit.limits.max_presets = 1;
+        config.outfit.limits.dynamic_lighting_enabled = false;
+    }
+    let capabilities: Value = server
+        .request(Method::GET, "/api/library/v1/capabilities", 1)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(capabilities["outfits_v1"]["limits"]["max_instances"], 1);
+    assert_eq!(capabilities["outfits_v1"]["limits"]["max_trails"], 0);
+    assert_eq!(
+        capabilities["outfits_v1"]["limits"]["dynamic_lighting_enabled"],
+        false
+    );
+    assert_eq!(
+        server
+            .request(Method::POST, "/api/library/v1/outfit-presets", 1)
+            .json(&input)
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        400
+    );
+    server
+        .state
+        .config
+        .write()
+        .await
+        .outfit
+        .limits
+        .max_instances = 2;
+    assert_eq!(
+        server
+            .request(Method::POST, "/api/library/v1/outfit-presets", 1)
+            .json(&input)
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        200
+    );
+    input["operation_id"] = json!(library::random_id());
+    input["preset_id"] = json!(library::random_id());
+    assert_eq!(
+        server
+            .request(Method::POST, "/api/library/v1/outfit-presets", 1)
+            .json(&input)
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        429
+    );
+    let mut config = server.state.config.write().await;
+    config.outfit.limits.max_controls = 0;
+    drop(config);
+    assert_eq!(
+        server
+            .request(Method::POST, "/api/library/v1/outfit-presets", 1)
+            .json(&input)
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        400
+    );
+}

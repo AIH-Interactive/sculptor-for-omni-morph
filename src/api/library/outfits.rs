@@ -31,6 +31,7 @@ pub async fn save(
 ) -> Result<Response> {
     let owner = player(&state, &headers)?;
     let input = parse_json(body)?;
-    let preset = blocking(move || state.storage.outfit_save_preset(owner, &input)).await?;
+    let limits = state.config.read().await.outfit.limits.clone();
+    let preset = blocking(move || state.storage.outfit_save_preset(owner, &input, &limits)).await?;
     json_response(serde_json::to_value(preset).map_err(|_| ErrorCode::Internal)?)
 }
