@@ -96,9 +96,17 @@ impl Storage {
             || input.byte_length == 0
             || !matches!(
                 input.metadata_source.as_str(),
-                "avatar.json" | "ysm.json" | "main.json" | "encrypted_manifest"
+                "avatar.json" | "cosmetic.json" | "ysm.json" | "main.json" | "encrypted_manifest"
             )
-            || (input.metadata.model_type == "FIGURA" && input.metadata_source != "avatar.json")
+            || (input.metadata.model_type == "FIGURA"
+                && input.metadata_source
+                    != if input.metadata.resource_kind
+                        == super::super::outfit::ResourceKind::Accessory
+                    {
+                        "cosmetic.json"
+                    } else {
+                        "avatar.json"
+                    })
             || (input.metadata.model_type == "YSM_ENCRYPTED"
                 && input.metadata_source != "encrypted_manifest")
         {
@@ -164,6 +172,22 @@ impl Storage {
                     ],
                 ).map_err(sql_error)?;
                 // The resource does not exist yet, but its reserved name/revision is already protected.
+                let kind = match input.metadata.resource_kind {
+                    super::super::outfit::ResourceKind::Avatar => "AVATAR",
+                    super::super::outfit::ResourceKind::Accessory => "ACCESSORY",
+                    super::super::outfit::ResourceKind::Outfit => return Err(ErrorCode::InvalidMessage),
+                };
+                transaction.execute("INSERT INTO library_resource_kinds VALUES (?1, ?2)",
+                    params![reservation.model_id, kind]).map_err(sql_error)?;
+                if let Some(metadata) = &input.metadata.accessory_metadata {
+                    // Skeleton declarations are checked against the actual client runtime later.
+                    // Container inspection alone cannot verify editable/exported bone capabilities.
+                    let mut metadata = metadata.clone();
+                    metadata.validation_source = "CLIENT_EXTRACTED".into();
+                    transaction.execute("INSERT INTO library_accessory_metadata VALUES (?1, 1, ?2)",
+                        params![reservation.model_id, serde_json::to_string(&metadata).map_err(|_| ErrorCode::Internal)?],
+                    ).map_err(sql_error)?;
+                }
                 transaction.execute("INSERT INTO library_resource_bindings VALUES (?1, ?2, 1, ?3, 1)",
                     params![actor.uuid.to_string(), descriptor.asset_id, reservation.model_id]).map_err(sql_error)?;
                 for tag in &input.metadata.tags {

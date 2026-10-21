@@ -35,6 +35,8 @@ pub async fn capabilities(State(state): State<AppState>, headers: HeaderMap) -> 
     json_response(
         json!({"enabled": true, "version": 1, "max_upload_bytes": config.model_library.max_upload_bytes,
         "formats": ["zip", "ysm"], "model_types": ["FIGURA", "YSM_PLAIN", "YSM_ENCRYPTED"],
+        "outfits_v1": crate::service::outfit::capabilities(),
+        "resource_kinds": ["AVATAR", "ACCESSORY", "OUTFIT"],
         "max_page_size": 64, "max_image_bytes": 2097152, "max_image_width": 2048, "max_image_height": 2048,
         "categories": config.model_library.effective_categories(), "admin_login_available": !config.model_library.admins.is_empty(),
         "preview_cache_seconds": config.model_library.preview_cache_seconds}),

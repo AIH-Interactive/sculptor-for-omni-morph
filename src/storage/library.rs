@@ -4,7 +4,7 @@ use rusqlite::{Connection, OptionalExtension, Transaction, params};
 use std::path::Path;
 use uuid::Uuid;
 
-pub(super) const SCHEMA_VERSION: u32 = 6;
+pub(super) const SCHEMA_VERSION: u32 = 7;
 
 pub(crate) fn sql_integer(value: u64) -> Result<i64> {
     i64::try_from(value).map_err(|_| ErrorCode::InvalidMessage)
@@ -25,6 +25,22 @@ pub(super) fn migrate(database: &mut Connection, path: &Path, version: u32) -> R
         ));
         database.backup("main", &backup, None).map_err(sql_error)?;
     }
+    // SQLite requires FK enforcement to be disabled outside the table-rebuild transaction.
+    // Restore the caller's setting on both success and rollback.
+    let foreign_keys: bool = database
+        .pragma_query_value(None, "foreign_keys", |row| row.get(0))
+        .map_err(sql_error)?;
+    database
+        .pragma_update(None, "foreign_keys", false)
+        .map_err(sql_error)?;
+    let result = migrate_transaction(database, version);
+    database
+        .pragma_update(None, "foreign_keys", foreign_keys)
+        .map_err(sql_error)?;
+    result
+}
+
+fn migrate_transaction(database: &mut Connection, version: u32) -> Result<()> {
     let transaction = database.transaction().map_err(sql_error)?;
     if version < 2 {
         transaction
@@ -57,6 +73,58 @@ pub(super) fn migrate(database: &mut Connection, path: &Path, version: u32) -> R
         transaction
             .execute_batch(include_str!("library_collection.sql"))
             .map_err(sql_error)?;
+    }
+    if version < 7 {
+        let required: bool = transaction.query_row(
+            "SELECT \"notnull\" FROM pragma_table_info('library_models') WHERE name = 'model_type'",
+            [], |row| row.get(0),
+        ).map_err(sql_error)?;
+        if required {
+            // Preserve every original column, index, dependent FK and effective-policy view.
+            let schema = include_str!("library.sql")
+                .split("CREATE TABLE library_revisions")
+                .next()
+                .ok_or(ErrorCode::Internal)?
+                .replace(
+                    "CREATE TABLE library_models (",
+                    "CREATE TABLE library_models_new (",
+                )
+                .replace("model_type TEXT NOT NULL CHECK", "model_type TEXT CHECK");
+            let (table, indexes) = schema
+                .split_once("CREATE INDEX library_public")
+                .ok_or(ErrorCode::Internal)?;
+            transaction.execute_batch(table).map_err(sql_error)?;
+            transaction
+                .execute_batch(
+                    "INSERT INTO library_models_new SELECT * FROM library_models;
+                 DROP VIEW library_effective_models;
+                 DROP TABLE library_models;
+                 ALTER TABLE library_models_new RENAME TO library_models;",
+                )
+                .map_err(sql_error)?;
+            transaction
+                .execute_batch(&format!("CREATE INDEX library_public{indexes}"))
+                .map_err(sql_error)?;
+            let (_, view) = include_str!("library_wardrobe.sql")
+                .split_once("CREATE VIEW library_effective_models AS")
+                .ok_or(ErrorCode::Internal)?;
+            transaction
+                .execute_batch(&format!("CREATE VIEW library_effective_models AS{view}"))
+                .map_err(sql_error)?;
+        }
+        transaction
+            .execute_batch(include_str!("outfit.sql"))
+            .map_err(sql_error)?;
+    }
+    let violations: bool = transaction
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM pragma_foreign_key_check)",
+            [],
+            |row| row.get(0),
+        )
+        .map_err(sql_error)?;
+    if violations {
+        return Err(ErrorCode::Internal);
     }
     transaction
         .pragma_update(None, "user_version", SCHEMA_VERSION)

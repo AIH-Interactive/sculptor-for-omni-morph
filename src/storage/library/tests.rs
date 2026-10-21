@@ -1,6 +1,122 @@
 use super::*;
 use std::sync::Arc;
 
+#[test]
+fn version_six_outfit_upgrade_preserves_members_grants_and_candidate_flags() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("old-v6.sqlite3");
+    let mut database = Connection::open(&path).unwrap();
+    database
+        .execute_batch(include_str!("../library.sql"))
+        .unwrap();
+    database
+        .execute_batch(include_str!("../library_distribution.sql"))
+        .unwrap();
+    database
+        .execute_batch(include_str!("../library_wardrobe.sql"))
+        .unwrap();
+    database
+        .execute_batch(include_str!("../library_collection.sql"))
+        .unwrap();
+    database.execute_batch(
+        "PRAGMA user_version = 6; PRAGMA foreign_keys = ON;
+         INSERT INTO library_models VALUES ('retained', 'owner', 'Name', 'Display', 'Internal', '[]',
+             'FIGURA', 'general', '', 'PUBLIC', 1, 'ACTIVE', 1, 1, 1, 1, 1);
+         INSERT INTO library_collection VALUES ('player', 'retained', 1, 'DOWNLOAD', 1);
+         INSERT INTO library_grants VALUES ('retained', 'player', 'Player', 'owner', 1);"
+    ).unwrap();
+    migrate(&mut database, &path, 6).unwrap();
+    assert_eq!(
+        database
+            .query_row("SELECT in_outfit FROM library_collection", [], |row| row
+                .get::<_, bool>(
+                0
+            ))
+            .unwrap(),
+        true
+    );
+    assert_eq!(
+        database
+            .query_row("SELECT count(*) FROM library_grants", [], |row| row
+                .get::<_, i64>(0))
+            .unwrap(),
+        1
+    );
+    assert_eq!(
+        database
+            .pragma_query_value(None, "foreign_keys", |row| row.get::<_, bool>(0))
+            .unwrap(),
+        true
+    );
+    assert_eq!(
+        database
+            .query_row("SELECT model_type FROM library_models", [], |row| row
+                .get::<_, String>(0))
+            .unwrap(),
+        "FIGURA"
+    );
+    assert_eq!(
+        database
+            .query_row("SELECT count(*) FROM pragma_foreign_key_check", [], |row| {
+                row.get::<_, i64>(0)
+            })
+            .unwrap(),
+        0
+    );
+    database
+        .execute("UPDATE library_models SET model_type = NULL", [])
+        .unwrap();
+    assert!(database
+        .execute("UPDATE library_models SET model_type = 'OUTFIT'", [])
+        .is_err());
+    migrate(&mut database, &path, SCHEMA_VERSION).unwrap();
+    let backups = std::fs::read_dir(directory.path())
+        .unwrap()
+        .filter_map(|entry| entry.ok())
+        .filter(|entry| entry.path().to_string_lossy().contains("pre-library-"))
+        .count();
+    assert_eq!(backups, 1);
+}
+
+#[test]
+fn outfit_migration_failure_rolls_back_and_restores_foreign_keys() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("failed-v6.sqlite3");
+    let mut database = Connection::open(&path).unwrap();
+    database
+        .execute_batch(include_str!("../library.sql"))
+        .unwrap();
+    database
+        .execute_batch(
+            "PRAGMA user_version = 6; PRAGMA foreign_keys = ON;
+         CREATE TABLE library_models_new (retained TEXT);
+         INSERT INTO library_models_new VALUES ('user data');",
+        )
+        .unwrap();
+    assert!(migrate(&mut database, &path, 6).is_err());
+    assert_eq!(
+        database
+            .pragma_query_value(None, "user_version", |row| row.get::<_, u32>(0))
+            .unwrap(),
+        6
+    );
+    assert_eq!(
+        database
+            .pragma_query_value(None, "foreign_keys", |row| row.get::<_, bool>(0))
+            .unwrap(),
+        true
+    );
+    assert_eq!(
+        database
+            .query_row("SELECT retained FROM library_models_new", [], |row| row
+                .get::<_, String>(
+                0
+            ))
+            .unwrap(),
+        "user data"
+    );
+}
+
 fn seed(storage: &Storage, model: &str) {
     storage.library_transaction(|transaction| {
         transaction.execute(

@@ -4,6 +4,7 @@ mod admin_preview;
 mod reports;
 mod images;
 mod models;
+mod outfits;
 mod collection;
 mod transfers;
 mod uploads;
@@ -246,6 +247,12 @@ pub(crate) async fn actor_identity(state: &AppState, headers: &HeaderMap) -> Res
 
 pub fn router(state: AppState) -> Router<AppState> {
     Router::new()
+        .route("/api/library/v1/outfits/current", get(outfits::current))
+        .route(
+            "/api/library/v1/outfit-presets",
+            get(outfits::list).post(outfits::save),
+        )
+        .route("/api/library/v1/outfit-presets/:id", get(outfits::read))
         .route("/api/library/v1/collection", get(collection::list))
         .route(
             "/api/library/v1/collection/:id",

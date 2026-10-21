@@ -23,6 +23,7 @@ mod transfers;
 mod collection;
 mod wardrobe;
 mod subscriptions;
+mod outfits;
 
 static TEST_SERVERS: std::sync::LazyLock<Arc<tokio::sync::Semaphore>> =
     std::sync::LazyLock::new(|| Arc::new(tokio::sync::Semaphore::new(4)));
@@ -828,6 +829,8 @@ async fn grants_resolve_only_verified_players_and_private_overrides_grants() {
 #[test]
 fn metadata_limits_and_literal_text_budget_are_enforced() {
     let mut metadata = library::Metadata {
+        resource_kind: crate::service::outfit::ResourceKind::Avatar,
+        accessory_metadata: None,
         display_name: "示例".into(),
         internal_name: "内部".into(),
         authors: vec!["作者".into()],

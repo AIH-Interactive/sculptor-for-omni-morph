@@ -59,6 +59,10 @@ pub fn random_id() -> String {
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Metadata {
+    #[serde(default)]
+    pub resource_kind: super::outfit::ResourceKind,
+    #[serde(default)]
+    pub accessory_metadata: Option<super::outfit::AccessoryMetadata>,
     pub display_name: String,
     pub internal_name: String,
     pub authors: Vec<String>,
@@ -87,6 +91,12 @@ pub fn text(value: &str, maximum: usize, empty: bool) -> Result<()> {
 
 impl Metadata {
     pub fn validate(&self, categories: &[String]) -> Result<()> {
+        match (&self.resource_kind, &self.accessory_metadata) {
+            (super::outfit::ResourceKind::Avatar, None) => {}
+            (super::outfit::ResourceKind::Accessory, Some(metadata)) => metadata.validate()?,
+            // Outfit JSON uses its own preparation/publication path, never a model upload.
+            _ => return Err(ErrorCode::InvalidMessage),
+        }
         text(&self.display_name, 96, false)?;
         text(&self.internal_name, 96, false)?;
         text(&self.description, 4096, true)?;
@@ -124,6 +134,8 @@ mod metadata_tests {
     fn original_credits_accept_many_authors_and_optional_tags() {
         let categories = vec!["full_model".to_owned()];
         let mut metadata = Metadata {
+            resource_kind: super::super::outfit::ResourceKind::Avatar,
+            accessory_metadata: None,
             display_name: "Wings".to_owned(),
             internal_name: "Wings".to_owned(),
             authors: (0..9)
@@ -155,6 +167,7 @@ mod metadata_tests {
 
 #[derive(Clone, Debug, Serialize)]
 pub struct Summary {
+    pub resource_kind: super::outfit::ResourceKind,
     pub model_id: String,
     pub revision: i64,
     pub policy_revision: i64,
@@ -162,7 +175,7 @@ pub struct Summary {
     pub internal_name: String,
     pub authors: Vec<String>,
     pub uploader: Uploader,
-    pub model_type: String,
+    pub model_type: Option<String>,
     pub image_revision: i64,
     pub image_available: bool,
     pub downloads: i64,
@@ -197,7 +210,8 @@ const MODEL_SELECT: &str = "SELECT m.model_id, m.uploader_uuid, m.uploader_name_
     COALESCE((SELECT image_revision FROM library_images i WHERE i.model_id = m.model_id), 0),
     COALESCE((SELECT downloads FROM library_stats s WHERE s.model_id = m.model_id), 0),
     (SELECT count(*) FROM library_favorites f WHERE f.model_id = m.model_id),
-    EXISTS(SELECT 1 FROM library_favorites f WHERE f.model_id = m.model_id AND f.player_uuid = :actor)
+    EXISTS(SELECT 1 FROM library_favorites f WHERE f.model_id = m.model_id AND f.player_uuid = :actor),
+    COALESCE((SELECT resource_kind FROM library_resource_kinds k WHERE k.model_id = m.model_id), 'AVATAR')
     FROM library_effective_models m";
 
 fn model_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Model> {
@@ -224,6 +238,12 @@ fn model_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Model> {
     let image_revision = row.get(16)?;
     Ok(Model {
         summary: Summary {
+            resource_kind: match row.get::<_, String>(20)?.as_str() {
+                "AVATAR" => super::outfit::ResourceKind::Avatar,
+                "ACCESSORY" => super::outfit::ResourceKind::Accessory,
+                "OUTFIT" => super::outfit::ResourceKind::Outfit,
+                _ => return Err(bad_data()),
+            },
             model_id: row.get(0)?,
             revision: row.get(12)?,
             policy_revision: row.get(13)?,
@@ -296,7 +316,10 @@ fn actions(database: &Connection, model: &mut Model, mut actor: Actor) -> Result
         allowed.push("favorite");
     }
     if permissions.use_model && model.published {
-        allowed.extend(["preview", "download", "equip"]);
+        allowed.extend(["preview", "download"]);
+        if model.summary.resource_kind == super::outfit::ResourceKind::Avatar {
+            allowed.push("equip");
+        }
     }
     if permissions.manage && model.policy.moderation != Moderation::Deleted {
         allowed.extend(["patch", "delete", "image", "grants"]);
@@ -468,6 +491,13 @@ impl Storage {
             detail["tags"] = json!(tags);
             detail["updated_at"] = json!(item.updated_at);
             detail["moderation_status"] = json!(item.moderation);
+            let accessory: Option<String> = database.query_row(
+                "SELECT metadata_json FROM library_accessory_metadata WHERE model_id = ?1 AND revision = ?2",
+                params![id, item.summary.revision], |row| row.get(0),
+            ).optional().map_err(sql_error)?;
+            if let Some(accessory) = accessory {
+                detail["accessory_metadata"] = serde_json::from_str(&accessory).map_err(|_| ErrorCode::Internal)?;
+            }
             if let Some((length, resource_revision, source, validation)) = revision {
                 detail["byte_length"] = json!(length);
                 detail["resource_revision"] = json!(resource_revision);

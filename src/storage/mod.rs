@@ -10,6 +10,7 @@ use std::{
 use uuid::Uuid;
 
 mod sqlite;
+pub(crate) mod outfit;
 pub mod library;
 pub(crate) mod recycle;
 pub(crate) mod library_equipment;
