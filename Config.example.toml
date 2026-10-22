@@ -129,6 +129,11 @@ dynamic_lighting_enabled = true # Per-particle dynamic light defaults off; serve
 max_dynamic_lights = 8 # Aggregate per wearer, independent of particle full-bright.
 max_dynamic_light_level = 15
 max_dynamic_light_radius = 16.0 # Blocks; per-particle radius is also bounded by this.
+max_custom_particles = 512 # Simultaneously alive per wearer, summed across instances; hard ceiling 4096.
+max_particle_layers = 4 # Per custom particle; hard ceiling 8. Zero disables layered/custom draws.
+max_ribbon_vertices = 4096 # Per wearer/render frame, including layers; hard ceiling 32768.
+max_particle_callbacks_per_tick = 64 # Aggregate per wearer; existing Lua instruction budget also applies.
+max_particle_callbacks_per_frame = 32 # Aggregate per wearer; retained frame replay does not rerun callbacks.
 
 ## Generate an offline hash with: python tools/library_admin_hash.py
 ## This is a shape example only. Replace placeholders before uncommenting.

@@ -174,6 +174,11 @@ async fn configured_limits_are_advertised_and_enforced_after_config_change() {
         config.outfit.limits.max_trails = 0;
         config.outfit.limits.max_presets = 1;
         config.outfit.limits.dynamic_lighting_enabled = false;
+        config.outfit.limits.max_custom_particles = 7;
+        config.outfit.limits.max_particle_layers = 2;
+        config.outfit.limits.max_ribbon_vertices = 64;
+        config.outfit.limits.max_particle_callbacks_per_tick = 0;
+        config.outfit.limits.max_particle_callbacks_per_frame = 1;
     }
     let capabilities: Value = server
         .request(Method::GET, "/api/library/v1/capabilities", 1)
@@ -185,6 +190,26 @@ async fn configured_limits_are_advertised_and_enforced_after_config_change() {
         .unwrap();
     assert_eq!(capabilities["outfits_v1"]["limits"]["max_instances"], 1);
     assert_eq!(capabilities["outfits_v1"]["limits"]["max_trails"], 0);
+    assert_eq!(
+        capabilities["outfits_v1"]["limits"]["max_custom_particles"],
+        7
+    );
+    assert_eq!(
+        capabilities["outfits_v1"]["limits"]["max_particle_layers"],
+        2
+    );
+    assert_eq!(
+        capabilities["outfits_v1"]["limits"]["max_ribbon_vertices"],
+        64
+    );
+    assert_eq!(
+        capabilities["outfits_v1"]["limits"]["max_particle_callbacks_per_tick"],
+        0
+    );
+    assert_eq!(
+        capabilities["outfits_v1"]["limits"]["max_particle_callbacks_per_frame"],
+        1
+    );
     assert_eq!(
         capabilities["outfits_v1"]["limits"]["dynamic_lighting_enabled"],
         false

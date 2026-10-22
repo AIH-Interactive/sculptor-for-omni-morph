@@ -35,6 +35,8 @@ pub struct AccessoryMetadata {
     pub display_bones: bool,
     pub edit_bones: bool,
     pub exported_bones: Vec<BoneRef>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub editable_bones: Vec<BoneRef>,
     pub validation_source: String,
 }
 
@@ -48,6 +50,8 @@ impl AccessoryMetadata {
         if self.schema_version != 1
             || self.supported_bases.len() > 3
             || self.exported_bones.len() > limits.max_exported_bones
+            || self.editable_bones.len() > limits.max_resource_nodes
+            || (!self.edit_bones && !self.editable_bones.is_empty())
             || (!self.has_bones
                 && (self.display_bones || self.edit_bones || !self.exported_bones.is_empty()))
             || !matches!(
@@ -72,11 +76,17 @@ impl AccessoryMetadata {
                 return Err(ErrorCode::InvalidMessage);
             }
         }
-        for bone in &self.exported_bones {
-            bone.validate_with_limits(limits)?;
-            // Resource declarations never embed a player's instance UUID.
-            if bone.instance_id.is_some() || bone.skeleton_hash != self.skeleton_hash {
-                return Err(ErrorCode::InvalidMessage);
+        for range in [&self.exported_bones, &self.editable_bones] {
+            let mut seen = std::collections::HashSet::new();
+            for bone in range {
+                bone.validate_with_limits(limits)?;
+                // Resource declarations never embed a player's instance UUID.
+                if bone.instance_id.is_some()
+                    || bone.skeleton_hash != self.skeleton_hash
+                    || !seen.insert(bone)
+                {
+                    return Err(ErrorCode::InvalidMessage);
+                }
             }
         }
         Ok(())
@@ -194,14 +204,14 @@ impl Transform {
     }
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq, Hash)]
 #[serde(deny_unknown_fields)]
 pub struct BoneSegment {
     pub name: String,
     pub sibling_ordinal: u32,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq, Hash)]
 #[serde(deny_unknown_fields)]
 pub struct BoneRef {
     /// None denotes the base skeleton; a UUID denotes exactly one accessory instance.
@@ -502,6 +512,60 @@ pub fn capabilities(limits: &OutfitLimits) -> serde_json::Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn editable_bone_ranges_preserve_legacy_metadata_and_reject_invalid_declarations() {
+        let legacy = serde_json::json!({
+            "schema_version": 1, "category": "Wings", "cosmetic_anchor": "wing_anchor",
+            "default_transform": {"position": [0.0,0.0,0.0], "rotation": [0.0,0.0,0.0], "scale": [1.0,1.0,1.0]},
+            "supported_bases": ["FIGURA", "YSM"], "has_bones": true,
+            "skeleton_revision": "one", "skeleton_hash": "a".repeat(64),
+            "display_bones": true, "edit_bones": true, "exported_bones": [],
+            "validation_source": "CLIENT_EXTRACTED"
+        });
+        let mut metadata: AccessoryMetadata = serde_json::from_value(legacy.clone()).unwrap();
+        metadata.validate().unwrap();
+        assert!(metadata.editable_bones.is_empty());
+        assert_eq!(serde_json::to_value(&metadata).unwrap(), legacy);
+        let bone = BoneRef {
+            instance_id: None,
+            path: vec![BoneSegment {
+                name: "Cosmetic".into(),
+                sibling_ordinal: 0,
+            }],
+            skeleton_hash: metadata.skeleton_hash.clone(),
+        };
+        metadata.editable_bones.push(bone.clone());
+        metadata.validate().unwrap();
+        let round_trip: AccessoryMetadata =
+            serde_json::from_slice(&serde_json::to_vec(&metadata).unwrap()).unwrap();
+        assert_eq!(round_trip, metadata);
+        metadata.edit_bones = false;
+        assert!(metadata.validate().is_err());
+        metadata.edit_bones = true;
+        metadata.editable_bones.push(bone.clone());
+        assert!(metadata.validate().is_err());
+        metadata.editable_bones.pop();
+        metadata.editable_bones[0].instance_id = Some(Uuid::nil());
+        assert!(metadata.validate().is_err());
+        metadata.editable_bones[0] = bone.clone();
+        metadata.editable_bones[0].skeleton_hash = "b".repeat(64);
+        assert!(metadata.validate().is_err());
+        metadata.editable_bones[0] = bone.clone();
+        let mut limits = OutfitLimits::default();
+        limits.max_resource_nodes = 0;
+        assert!(metadata.validate_with_limits(&limits).is_err());
+        limits = OutfitLimits::default();
+        limits.max_depth = 1;
+        metadata.editable_bones[0].path.push(BoneSegment {
+            name: "child".into(),
+            sibling_ordinal: 0,
+        });
+        assert!(metadata.validate_with_limits(&limits).is_err());
+        metadata.editable_bones.clear();
+        metadata.exported_bones = vec![bone.clone(), bone];
+        assert!(metadata.validate().is_err());
+    }
 
     fn fixture() -> OutfitConfig {
         serde_json::from_str(include_str!(

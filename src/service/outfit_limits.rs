@@ -46,6 +46,11 @@ pub struct OutfitLimits {
     pub max_dynamic_lights: usize,
     pub max_dynamic_light_level: u8,
     pub max_dynamic_light_radius: f64,
+    pub max_custom_particles: usize,
+    pub max_particle_layers: usize,
+    pub max_ribbon_vertices: usize,
+    pub max_particle_callbacks_per_tick: usize,
+    pub max_particle_callbacks_per_frame: usize,
 }
 
 impl Default for OutfitLimits {
@@ -74,6 +79,11 @@ impl Default for OutfitLimits {
             max_dynamic_lights: 8,
             max_dynamic_light_level: 15,
             max_dynamic_light_radius: 16.0,
+            max_custom_particles: 512,
+            max_particle_layers: 4,
+            max_ribbon_vertices: 4096,
+            max_particle_callbacks_per_tick: 64,
+            max_particle_callbacks_per_frame: 32,
         }
     }
 }
@@ -94,6 +104,11 @@ impl OutfitLimits {
             (self.max_presets, hard.max_presets),
             (self.max_display_ordinals, hard.max_display_ordinals),
             (self.max_exported_bones, hard.max_exported_bones),
+            (self.max_custom_particles, 4096),
+            (self.max_particle_layers, 8),
+            (self.max_ribbon_vertices, 32768),
+            (self.max_particle_callbacks_per_tick, 1024),
+            (self.max_particle_callbacks_per_frame, 512),
         ];
         if bounded.iter().any(|(value, maximum)| value > maximum)
             || !(1..=hard.max_depth).contains(&self.max_depth)
@@ -141,8 +156,45 @@ mod tests {
             "max_dynamic_lights = 33",
             "max_dynamic_light_level = 16",
             "max_dynamic_light_radius = nan",
+            "max_custom_particles = 4097",
+            "max_particle_layers = 9",
+            "max_ribbon_vertices = 32769",
+            "max_particle_callbacks_per_tick = 1025",
+            "max_particle_callbacks_per_frame = 513",
+            "max_custom_particles = -1",
         ] {
             assert!(toml::from_str::<OutfitSettings>(&format!("[limits]\n{value}\n")).is_err());
+        }
+    }
+
+    #[test]
+    fn custom_particle_limits_preserve_defaults_zero_and_safety_bounds() {
+        let defaults: OutfitSettings = toml::from_str("[limits]\n").unwrap();
+        assert_eq!(defaults.limits.max_custom_particles, 512);
+        assert_eq!(defaults.limits.max_particle_layers, 4);
+        assert_eq!(defaults.limits.max_ribbon_vertices, 4096);
+        assert_eq!(defaults.limits.max_particle_callbacks_per_tick, 64);
+        assert_eq!(defaults.limits.max_particle_callbacks_per_frame, 32);
+        for (count, layers, vertices, tick, frame) in [(0, 0, 0, 0, 0), (4096, 8, 32768, 1024, 512)]
+        {
+            let input = format!(
+                "[limits]\nmax_custom_particles={count}\nmax_particle_layers={layers}\n\
+                 max_ribbon_vertices={vertices}\nmax_particle_callbacks_per_tick={tick}\n\
+                 max_particle_callbacks_per_frame={frame}\n"
+            );
+            let settings: OutfitSettings = toml::from_str(&input).unwrap();
+            let advertised = super::super::outfit::capabilities(&settings.limits);
+            assert_eq!(advertised["limits"]["max_custom_particles"], count);
+            assert_eq!(advertised["limits"]["max_particle_layers"], layers);
+            assert_eq!(advertised["limits"]["max_ribbon_vertices"], vertices);
+            assert_eq!(
+                advertised["limits"]["max_particle_callbacks_per_tick"],
+                tick
+            );
+            assert_eq!(
+                advertised["limits"]["max_particle_callbacks_per_frame"],
+                frame
+            );
         }
     }
 }
