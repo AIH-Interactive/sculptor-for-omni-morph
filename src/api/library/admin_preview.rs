@@ -14,7 +14,8 @@ struct PreviewStream {
     id: Uuid,
     query: PreviewQuery,
     hash: Vec<u8>,
-    file: tokio::fs::File,
+    file: Box<dyn tokio::io::AsyncRead + Unpin + Send>,
+    configuration: bool,
     remaining: u64,
     _permit: DownloadPermit,
 }
@@ -33,31 +34,46 @@ pub async fn download(
     let storage = state.storage.clone();
     let source_kind = kind.clone();
     let source_query = query.clone();
-    let avatar =
-        blocking(move || storage.library_admin_preview(actor, &source_kind, id, &source_query))
+    let configuration =
+        blocking(move || storage.recycled_configuration(actor, &source_kind, id)).await?;
+    let is_configuration = configuration.is_some();
+    let (file, length, digest): (Box<dyn tokio::io::AsyncRead + Unpin + Send>, u64, Vec<u8>) =
+        if let Some(bytes) = configuration {
+            let length = bytes.len() as u64;
+            let digest = crate::storage::sha256(&bytes).to_vec();
+            (Box::new(std::io::Cursor::new(bytes)), length, digest)
+        } else {
+            let storage = state.storage.clone();
+            let source_kind = kind.clone();
+            let avatar = blocking(move || {
+                storage.library_admin_preview(actor, &source_kind, id, &source_query)
+            })
             .await?;
-    let path = if matches!(kind.as_str(), "RECYCLE" | "LIBRARY_RECYCLE") {
-        let storage = state.storage.clone();
-        let source_kind = kind.clone();
-        let owner = query.owner;
-        blocking(move || storage.recycle_preview(actor, &source_kind, id, owner)).await?.1
-    } else {
-        state.storage.blob_path(&avatar.raw_sha256)?
-    };
-    let file = tokio::fs::File::open(path)
-        .await
-        .map_err(|_| ErrorCode::NotFound)?;
-    if file
-        .metadata()
-        .await
-        .map_err(|_| ErrorCode::Internal)?
-        .len()
-        != avatar.raw_length
-    {
-        return Err(ErrorCode::Internal.into());
-    }
-    let length = avatar.raw_length;
-    let hash = faster_hex::hex_string(&avatar.raw_sha256);
+            let path = if matches!(kind.as_str(), "RECYCLE" | "LIBRARY_RECYCLE") {
+                let storage = state.storage.clone();
+                let source_kind = kind.clone();
+                let owner = query.owner;
+                blocking(move || storage.recycle_preview(actor, &source_kind, id, owner))
+                    .await?
+                    .1
+            } else {
+                state.storage.blob_path(&avatar.raw_sha256)?
+            };
+            let file = tokio::fs::File::open(path)
+                .await
+                .map_err(|_| ErrorCode::NotFound)?;
+            if file
+                .metadata()
+                .await
+                .map_err(|_| ErrorCode::Internal)?
+                .len()
+                != avatar.raw_length
+            {
+                return Err(ErrorCode::Internal.into());
+            }
+            (Box::new(file), avatar.raw_length, avatar.raw_sha256)
+        };
+    let hash = faster_hex::hex_string(&digest);
     let stream = futures_util::stream::try_unfold(
         PreviewStream {
             state,
@@ -65,8 +81,9 @@ pub async fn download(
             kind,
             id,
             query,
-            hash: avatar.raw_sha256,
+            hash: digest,
             file,
+            configuration: is_configuration,
             remaining: length,
             _permit: permit,
         },
@@ -87,10 +104,22 @@ pub async fn download(
             let kind = stream.kind.clone();
             let query = stream.query.clone();
             let id = stream.id;
-            let avatar = blocking(move || storage.library_admin_preview(actor, &kind, id, &query))
-                .await
-                .map_err(|_| unavailable())?;
-            if avatar.raw_sha256 != stream.hash {
+            let configuration = stream.configuration;
+            let hash = blocking(move || {
+                if configuration {
+                    let bytes = storage
+                        .recycled_configuration(actor, &kind, id)?
+                        .ok_or(ErrorCode::NotFound)?;
+                    Ok(crate::storage::sha256(&bytes).to_vec())
+                } else {
+                    storage
+                        .library_admin_preview(actor, &kind, id, &query)
+                        .map(|avatar| avatar.raw_sha256)
+                }
+            })
+            .await
+            .map_err(|_| unavailable())?;
+            if hash != stream.hash {
                 return Err(unavailable());
             }
             let mut bytes = vec![0; stream.remaining.min(32 * 1024) as usize];
@@ -108,7 +137,15 @@ pub async fn download(
     );
     let mut response = Response::new(Body::from_stream(stream));
     for (name, value) in [
-        ("content-type", "application/octet-stream".to_string()),
+        (
+            "content-type",
+            if is_configuration {
+                "application/json"
+            } else {
+                "application/octet-stream"
+            }
+            .to_string(),
+        ),
         ("content-length", length.to_string()),
         ("x-omnimorph-sha256", hash),
         ("cache-control", "private, no-store".to_string()),

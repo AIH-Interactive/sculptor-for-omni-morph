@@ -223,6 +223,7 @@ async fn migration_backfills_only_published_active_submissions() {
     let (deleted, _) = server.upload_model("PUBLIC").await;
     let database =
         rusqlite::Connection::open(server._directory.path().join("metadata.sqlite3")).unwrap();
+    crate::storage::library::tests::restore_legacy_download_receipts(&database);
     database
         .execute(
             "UPDATE library_models SET moderation_status = 'DELETED' WHERE model_id = ?1",

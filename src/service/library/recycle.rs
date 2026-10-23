@@ -35,6 +35,9 @@ impl Storage {
                     return Err(ErrorCode::Conflict);
                 }
                 if purge {
+                    // Keep revision identity for historical receipts, but erase the small JSON body.
+                    transaction.execute("UPDATE library_outfit_contents SET configuration_json = '' WHERE model_id = ?1",
+                        [id]).map_err(sql_error)?;
                     transaction.execute("UPDATE library_recycle SET purged = 1 WHERE model_id = ?1", [id]).map_err(sql_error)?;
                 } else {
                     for hash in Self::library_files(transaction, id)? {

@@ -1,6 +1,96 @@
 use super::*;
 use std::sync::Arc;
 
+/// Old-version fixtures start from current storage; restore the actual former receipt contract before relabeling.
+pub(crate) fn restore_legacy_download_receipts(database: &Connection) {
+    let (_, receipt) = include_str!("../library.sql")
+        .split_once("CREATE TABLE library_download_receipts")
+        .unwrap();
+    let receipt = receipt
+        .split("CREATE UNIQUE INDEX library_download_dedup")
+        .next()
+        .unwrap();
+    database
+        .execute_batch(&format!(
+            "BEGIN;
+         DROP TRIGGER library_receipt_revision_insert;
+         DROP TRIGGER library_receipt_revision_update;
+         DROP TRIGGER library_model_receipt_delete;
+         DROP TRIGGER library_model_receipt_update;
+         DROP TRIGGER library_outfit_receipt_delete;
+         DROP TRIGGER library_outfit_receipt_update;
+         CREATE TABLE library_download_receipts_legacy{receipt}
+         INSERT INTO library_download_receipts_legacy SELECT * FROM library_download_receipts;
+         DROP TABLE library_download_receipts;
+         ALTER TABLE library_download_receipts_legacy RENAME TO library_download_receipts;
+         CREATE UNIQUE INDEX library_download_dedup
+             ON library_download_receipts(player_uuid, model_id, revision, counted_day)
+             WHERE counted_day IS NOT NULL;
+         COMMIT;"
+        ))
+        .unwrap();
+}
+
+#[test]
+fn version_seven_receipts_upgrade_without_losing_revision_integrity() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("old-v7.sqlite3");
+    let mut database = Connection::open(&path).unwrap();
+    database
+        .execute_batch(
+            &include_str!("../library.sql")
+                .replace("model_type TEXT NOT NULL CHECK", "model_type TEXT CHECK"),
+        )
+        .unwrap();
+    database
+        .execute_batch(include_str!("../library_distribution.sql"))
+        .unwrap();
+    database
+        .execute_batch(include_str!("../library_wardrobe.sql"))
+        .unwrap();
+    database
+        .execute_batch(include_str!("../outfit.sql"))
+        .unwrap();
+    database.execute_batch(
+        "PRAGMA user_version = 7; PRAGMA foreign_keys = ON;
+         INSERT INTO library_models VALUES ('model', 'owner', 'Name', 'Display', 'Internal', '[]',
+             'FIGURA', 'general', '', 'PUBLIC', 0, 'ACTIVE', 1, 2, 1, 1, 1);
+         INSERT INTO library_revisions VALUES ('model', 1, 'owner', 'asset', 1,
+             'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', 10, 'NBT', 'avatar.json', 'SERVER_VERIFIED', 'source.zip');
+         INSERT INTO library_download_receipts VALUES ('transfer', 'viewer', 'model', 1, 'download', 2, 100, 1, 1, 4);"
+    ).unwrap();
+    migrate(&mut database, &path, 7).unwrap();
+    let retained: (String, i64, bool, bool, i64) = database.query_row(
+        "SELECT transfer_id, revision, bytes_sent, completed, counted_day FROM library_download_receipts", [],
+        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?)),
+    ).unwrap();
+    assert_eq!(retained, ("transfer".into(), 1, true, true, 4));
+    assert!(database
+        .execute("UPDATE library_download_receipts SET revision = 2", [])
+        .is_err());
+    assert!(database
+        .execute("DELETE FROM library_revisions WHERE model_id = 'model'", [])
+        .is_err());
+    assert!(database
+        .execute(
+            "UPDATE library_revisions SET revision = 2 WHERE model_id = 'model'",
+            []
+        )
+        .is_err());
+    assert!(database
+        .pragma_query_value(None, "foreign_keys", |row| row.get::<_, bool>(0))
+        .unwrap());
+    assert_eq!(
+        database
+            .query_row("SELECT count(*) FROM pragma_foreign_key_check", [], |row| {
+                row.get::<_, i64>(0)
+            })
+            .unwrap(),
+        0
+    );
+    migrate(&mut database, &path, SCHEMA_VERSION).unwrap();
+}
+
 #[test]
 fn version_six_outfit_upgrade_preserves_members_grants_and_candidate_flags() {
     let directory = tempfile::tempdir().unwrap();
@@ -206,6 +296,7 @@ fn version_three_upgrade_preserves_policy_and_backs_up_before_management_tables(
     }).unwrap();
     drop(storage);
     let database = Connection::open(&path).unwrap();
+    restore_legacy_download_receipts(&database);
     database.execute_batch(
         "DROP TABLE library_collection;
          DROP VIEW library_effective_models; DROP VIEW library_hash_blocked_models;
@@ -245,6 +336,7 @@ fn version_two_equipment_settings_default_closed_and_survive_restart() {
     seed(&storage, "model");
     drop(storage);
     let database = Connection::open(&path).unwrap();
+    restore_legacy_download_receipts(&database);
     database
         .execute_batch(
             "DROP TABLE library_collection;

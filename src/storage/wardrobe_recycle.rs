@@ -39,6 +39,29 @@ fn first_page() -> u32 {
 }
 
 impl Storage {
+    pub(crate) fn recycled_configuration(
+        &self,
+        actor: Actor,
+        kind: &str,
+        id: Uuid,
+    ) -> Result<Option<Vec<u8>>> {
+        if !actor.admin_context {
+            return Err(ErrorCode::Forbidden);
+        }
+        if kind != "LIBRARY_RECYCLE" {
+            return Ok(None);
+        }
+        self.library_read(|database| {
+            database.query_row(
+                "SELECT c.configuration_json FROM library_models m
+                 JOIN library_recycle r USING(model_id)
+                 JOIN library_outfit_contents c ON c.model_id = m.model_id AND c.revision = m.current_revision
+                 WHERE m.model_id = ?1 AND m.moderation_status = 'DELETED' AND r.purged = 0",
+                [id.to_string()], |row| row.get::<_, String>(0),
+            ).optional().map(|value| value.map(String::into_bytes)).map_err(sqlite::sql_error)
+        })
+    }
+
     pub(crate) fn recycle_preview(
         &self,
         actor: Actor,
@@ -290,9 +313,11 @@ impl Storage {
         self.library_read(|database| {
             let mut statement = database.prepare(
                 "SELECT m.model_id, m.uploader_uuid, m.uploader_name_snapshot, m.display_name, m.authors_json,
-                 m.policy_revision, m.current_revision, r.deleted_at, COALESCE(s.downloads, 0), m.model_type
+                 m.policy_revision, m.current_revision, r.deleted_at, COALESCE(s.downloads, 0), m.model_type,
+                 COALESCE(k.resource_kind, 'AVATAR')
                  FROM library_models m JOIN library_recycle r USING(model_id)
                  LEFT JOIN library_stats s USING(model_id)
+                 LEFT JOIN library_resource_kinds k USING(model_id)
                  WHERE m.published = 1 AND m.moderation_status = 'DELETED' AND r.purged = 0
                  AND (?2 = '' OR m.model_type = ?2) AND (?3 = '' OR ?3 = 'LIBRARY')
                  AND (?1 = '' OR instr(lower(m.display_name), lower(?1)) > 0
@@ -305,7 +330,8 @@ impl Storage {
                     "name": row.get::<_, String>(3)?, "authors": serde_json::from_str::<Value>(&authors).unwrap_or(json!([])),
                     "policy_revision": row.get::<_, i64>(5)?, "asset_revision": row.get::<_, i64>(6)?,
                     "deleted_at": row.get::<_, i64>(7)?, "downloads": row.get::<_, i64>(8)?,
-                    "model_type": row.get::<_, String>(9)?, "status": "DELETED", "can_restore": true,
+                    "model_type": row.get::<_, Option<String>>(9)?, "resource_kind": row.get::<_, String>(10)?,
+                    "status": "DELETED", "can_restore": true,
                     "equipment_revision": 0, "asset_id": ""}))
             }).map_err(sqlite::sql_error)?;
             for row in rows {

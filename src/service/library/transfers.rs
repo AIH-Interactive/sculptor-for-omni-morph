@@ -18,9 +18,15 @@ pub struct CompleteInput {
 }
 
 pub struct TransferFile {
-    pub path: PathBuf,
+    pub body: TransferBody,
     pub length: u64,
     pub raw_sha256: String,
+    pub media_type: &'static str,
+}
+
+pub enum TransferBody {
+    Model(PathBuf),
+    Configuration(Vec<u8>),
 }
 
 fn receipt(
@@ -118,15 +124,41 @@ impl Storage {
     pub fn library_transfer_file(&self, actor: Actor, transfer: &str) -> Result<TransferFile> {
         self.library_read(|database| {
             let (model, revision, _, _, _, _) = receipt(database, transfer, actor)?;
-            let (hash, length): (String, i64) = database.query_row(
+            self.library_transfer_payload(database, &model, revision)
+        })
+    }
+
+    fn library_transfer_payload(
+        &self,
+        database: &Connection,
+        model: &str,
+        revision: i64,
+    ) -> Result<TransferFile> {
+        let configuration: Option<String> = database.query_row(
+                "SELECT configuration_json FROM library_outfit_contents WHERE model_id = ?1 AND revision = ?2",
+                params![model, revision], |row| row.get(0),
+            ).optional().map_err(sql_error)?;
+        if let Some(configuration) = configuration {
+            let bytes = configuration.into_bytes();
+            return Ok(TransferFile {
+                length: bytes.len() as u64,
+                raw_sha256: faster_hex::hex_string(&crate::storage::sha256(&bytes)),
+                body: TransferBody::Configuration(bytes),
+                media_type: "application/json",
+            });
+        }
+        let (hash, length): (String, i64) = database.query_row(
                 "SELECT raw_sha256, byte_length FROM library_revisions WHERE model_id = ?1 AND revision = ?2",
                 params![model, revision], |row| Ok((row.get(0)?, row.get(1)?)),
             ).map_err(sql_error)?;
-            library::validate_hash("RAW_SHA256", &hash)?;
-            let mut digest = [0; 32];
-            faster_hex::hex_decode(hash.as_bytes(), &mut digest).map_err(|_| ErrorCode::Internal)?;
-            Ok(TransferFile { path: self.library_blob_path(&digest)?, raw_sha256: hash,
-                length: u64::try_from(length).map_err(|_| ErrorCode::Internal)? })
+        library::validate_hash("RAW_SHA256", &hash)?;
+        let mut digest = [0; 32];
+        faster_hex::hex_decode(hash.as_bytes(), &mut digest).map_err(|_| ErrorCode::Internal)?;
+        Ok(TransferFile {
+            body: TransferBody::Model(self.library_blob_path(&digest)?),
+            raw_sha256: hash,
+            media_type: "application/octet-stream",
+            length: u64::try_from(length).map_err(|_| ErrorCode::Internal)?,
         })
     }
 
@@ -157,8 +189,7 @@ impl Storage {
         );
         self.library_transaction(|transaction| {
             let (model, revision, purpose, _, sent, completed) = receipt(transaction, transfer, actor)?;
-            let hash: String = transaction.query_row("SELECT raw_sha256 FROM library_revisions WHERE model_id = ?1 AND revision = ?2",
-                params![model, revision], |row| row.get(0)).map_err(sql_error)?;
+            let hash = self.library_transfer_payload(transaction, &model, revision)?.raw_sha256;
             if !sent || purpose != "download" || hash != input.raw_sha256 {
                 return Err(ErrorCode::Conflict);
             }

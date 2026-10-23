@@ -178,6 +178,45 @@ pub(crate) mod tests {
             Err(ErrorCode::InvalidMessage)
         ));
     }
+
+    #[test]
+    fn encrypted_accessory_wrappers_preserve_the_portable_source_boundary() {
+        for (marker, manifest, field, accepted) in [
+            ("ACCESSORY", "{}", "scripts", true),
+            ("ACCESSORY", "{}", "sounds", true),
+            ("ACCESSORY", "{}", "resources", true),
+            ("AVATAR", "{}", "scripts", false),
+            ("ACCESSORY", "not json", "scripts", false),
+            ("ACCESSORY", "[]", "scripts", false),
+            ("ACCESSORY", "{}", "models", false),
+            ("ACCESSORY", "{}", "textures", false),
+        ] {
+            let (bytes, _) = fixture(true, false);
+            let mut nbt = Vec::new();
+            GzDecoder::new(bytes.as_slice())
+                .read_to_end(&mut nbt)
+                .unwrap();
+            let needle = b"ysm-native";
+            let offset = nbt
+                .windows(needle.len())
+                .position(|bytes| bytes == needle)
+                .unwrap()
+                + needle.len();
+            let mut metadata = Vec::new();
+            string_tag(&mut metadata, "resource_kind", marker);
+            string_tag(&mut metadata, "cosmetic_json", manifest);
+            nbt.splice(offset..offset, metadata);
+            nbt.pop();
+            nbt.push(10);
+            text(&mut nbt, field);
+            nbt.extend_from_slice(&[0, 0]);
+            let mut encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+            encoder.write_all(&nbt).unwrap();
+            let result = inspect_with_budget(encoder.finish().unwrap().as_slice(), MAX_DECOMPRESSED);
+            assert_eq!(result.is_ok(), accepted, "{marker}/{manifest}/{field}");
+        }
+    }
+
 }
 
 struct Scanner<R> {
@@ -191,6 +230,9 @@ struct Scanner<R> {
     ciphertext_hash: Option<Vec<u8>>,
     encrypted: bool,
     encrypted_forbidden_field: bool,
+    encrypted_wrapper_field: bool,
+    accessory: bool,
+    cosmetic_manifest: bool,
     nbt_hash: ring::digest::Context,
     internal_name: Option<String>,
     authors_text: String,
@@ -238,6 +280,9 @@ fn inspect_with_limits(
         ciphertext_hash: None,
         encrypted: false,
         encrypted_forbidden_field: false,
+        encrypted_wrapper_field: false,
+        accessory: false,
+        cosmetic_manifest: false,
         nbt_hash: ring::digest::Context::new(&ring::digest::SHA256),
         internal_name: None,
         authors_text: String::new(),
@@ -262,6 +307,7 @@ fn inspect_with_limits(
         }
         if scanner.encrypted {
             if scanner.encrypted_forbidden_field
+                || (scanner.encrypted_wrapper_field && !(scanner.accessory && scanner.cosmetic_manifest))
                 || scanner.ciphertext_hash.is_none()
                 || scanner.ciphertext_hash != scanner.content_hash
             {
@@ -443,6 +489,11 @@ impl<R: Read> Scanner<R> {
                         self.authors_text = value;
                     }
                     "metadata/format" => self.format = value,
+                    "metadata/resource_kind" => self.accessory = value == "ACCESSORY",
+                    "metadata/cosmetic_json" => {
+                        self.cosmetic_manifest = serde_json::from_str::<serde_json::Value>(&value)
+                            .is_ok_and(|value| value.is_object());
+                    }
                     "ysm/container_kind" if value == "YSGP" => self.encrypted = true,
                     "ysm/content_sha256" => {
                         let mut hash = vec![0; 32];
@@ -474,7 +525,13 @@ impl<R: Read> Scanner<R> {
                     if !names.insert(name.clone()) {
                         return Err(ErrorCode::InvalidMessage);
                     }
-                    let allowed = match path {
+                    let wrapper = match path {
+                        "" => matches!(name.as_str(), "scripts" | "sounds" | "resources"),
+                        "metadata" => matches!(name.as_str(), "resource_kind" | "cosmetic_json"),
+                        _ => false,
+                    };
+                    self.encrypted_wrapper_field |= wrapper;
+                    let allowed = wrapper || match path {
                         "" => matches!(name.as_str(), "metadata" | "ysm"),
                         "metadata" => matches!(
                             name.as_str(),

@@ -1,5 +1,5 @@
 use super::*;
-use crate::service::library::transfers::{CompleteInput, TransferInput};
+use crate::service::library::transfers::{CompleteInput, TransferBody, TransferInput};
 use crate::service::resource::DownloadPermit;
 use axum::{
     body::{Body, Bytes},
@@ -36,7 +36,7 @@ struct TransferStream {
     state: AppState,
     headers: HeaderMap,
     id: String,
-    file: tokio::fs::File,
+    file: Box<dyn tokio::io::AsyncRead + Unpin + Send>,
     remaining: u64,
     _permit: DownloadPermit,
 }
@@ -51,18 +51,16 @@ pub async fn download(
     let storage = state.storage.clone();
     let transfer = id.clone();
     let resource = blocking(move || storage.library_transfer_file(actor, &transfer)).await?;
-    let file = tokio::fs::File::open(resource.path)
-        .await
-        .map_err(|_| ErrorCode::NotFound)?;
-    if file
-        .metadata()
-        .await
-        .map_err(|_| ErrorCode::Internal)?
-        .len()
-        != resource.length
-    {
-        return Err(ErrorCode::Internal.into());
-    }
+    let file: Box<dyn tokio::io::AsyncRead + Unpin + Send> = match resource.body {
+        TransferBody::Model(path) => {
+            let file = tokio::fs::File::open(path).await.map_err(|_| ErrorCode::NotFound)?;
+            if file.metadata().await.map_err(|_| ErrorCode::Internal)?.len() != resource.length {
+                return Err(ErrorCode::Internal.into());
+            }
+            Box::new(file)
+        }
+        TransferBody::Configuration(bytes) => Box::new(std::io::Cursor::new(bytes)),
+    };
     let stream = futures_util::stream::try_unfold(
         TransferStream {
             state,
@@ -110,7 +108,7 @@ pub async fn download(
     let mut response = Response::new(Body::from_stream(stream));
     response.headers_mut().insert(
         "content-type",
-        "application/octet-stream".parse().expect("literal header"),
+        resource.media_type.parse().expect("literal header"),
     );
     response.headers_mut().insert(
         "content-length",

@@ -270,6 +270,8 @@ pub fn router(state: AppState) -> Router<AppState> {
             post(transfers::complete),
         )
         .route("/api/library/v1/uploads", post(uploads::reserve))
+        .route("/api/library/v1/uploads/outfit", post(outfits::publish))
+        .route("/api/library/v1/models/:id/outfit", get(outfits::published))
         .route(
             "/api/library/v1/uploads/:operation",
             axum::routing::delete(uploads::cancel),

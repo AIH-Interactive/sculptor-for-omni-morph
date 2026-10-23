@@ -6,6 +6,7 @@ mod distribution;
 pub(crate) use distribution::{can_observe_model, event_visible, record_identity};
 pub mod transfers;
 pub mod uploads;
+pub mod outfit_uploads;
 pub mod collection;
 pub mod recycle;
 use super::library_policy::{Actor, Moderation, Policy, Visibility};
@@ -497,6 +498,15 @@ impl Storage {
             ).optional().map_err(sql_error)?;
             if let Some(accessory) = accessory {
                 detail["accessory_metadata"] = serde_json::from_str(&accessory).map_err(|_| ErrorCode::Internal)?;
+            }
+            if item.summary.resource_kind == super::outfit::ResourceKind::Outfit {
+                let configuration: String = database.query_row(
+                    "SELECT configuration_json FROM library_outfit_contents WHERE model_id = ?1 AND revision = ?2",
+                    params![id, item.summary.revision], |row| row.get(0),
+                ).map_err(sql_error)?;
+                detail["byte_length"] = json!(configuration.len());
+                detail["metadata_source"] = json!("outfit.json");
+                detail["metadata_validation"] = json!("SERVER_VERIFIED");
             }
             if let Some((length, resource_revision, source, validation)) = revision {
                 detail["byte_length"] = json!(length);
