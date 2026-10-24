@@ -240,6 +240,11 @@ impl Server {
 }
 
 fn figura_package() -> Vec<u8> {
+    figura_package_named("Internal")
+}
+
+/// The same minimal Figura package with a different internal name, so its distributed bytes differ.
+fn figura_package_named(internal_name: &str) -> Vec<u8> {
     use std::io::Write;
     fn string(output: &mut Vec<u8>, value: &str) {
         output.extend_from_slice(&(value.len() as u16).to_be_bytes());
@@ -247,7 +252,7 @@ fn figura_package() -> Vec<u8> {
     }
     let mut nbt = vec![10, 0, 0, 10];
     string(&mut nbt, "metadata");
-    for (name, value) in [("name", "Internal"), ("authors", "作者一\nSecond")] {
+    for (name, value) in [("name", internal_name), ("authors", "作者一\nSecond")] {
         nbt.push(8);
         string(&mut nbt, name);
         string(&mut nbt, value);

@@ -314,6 +314,67 @@ async fn outfit_private_upload_is_atomic_private_on_first_commit_and_idempotent(
     );
 }
 
+async fn upload_private(server: &Server, input: &PrivateUpload, bytes: &[u8]) -> reqwest::Response {
+    let reserved = reserve(server, input).await;
+    let path = reserved["relative_path"].as_str().unwrap().to_owned();
+    assert_eq!(
+        server
+            .request(Method::PUT, &path, 1)
+            .header("content-type", "application/octet-stream")
+            .body(bytes.to_vec())
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        204
+    );
+    server
+        .request(
+            Method::POST,
+            &format!("{UPLOADS}/{}/commit", input.operation_id),
+            1,
+        )
+        .send()
+        .await
+        .unwrap()
+}
+
+/// A source packaged by an older client can be replaced by the owner's current packaging of the same source.
+#[tokio::test]
+async fn outfit_private_upload_replaces_an_outdated_package_of_the_same_local_source() {
+    let server = Server::start().await;
+    let owner = Uuid::from_u128(1);
+    let outdated = figura_package_named("Outdated packaging");
+    let first = input(&outdated);
+    let response = upload_private(&server, &first, &outdated).await;
+    assert_eq!(response.status(), 200, "{}", response.text().await.unwrap());
+
+    let current = figura_package_named("Current packaging");
+    let mut second = input(&current);
+    second.reference = first.reference.clone();
+    let response = upload_private(&server, &second, &current).await;
+    assert_eq!(response.status(), 200, "{}", response.text().await.unwrap());
+    let binding: Value = response.json().await.unwrap();
+    assert_eq!(binding["raw_sha256"], second.raw_sha256);
+
+    let resolved = server
+        .state
+        .storage
+        .outfit_resolve_local(
+            owner,
+            &first.reference,
+            crate::service::outfit::ResourceKind::Avatar,
+            &OutfitLimits::default(),
+        )
+        .unwrap()
+        .unwrap();
+    assert_eq!(resolved.raw_sha256, second.raw_sha256);
+    assert_eq!(
+        resolved.asset_id,
+        second.request(owner).unwrap().resource.unwrap().asset_id
+    );
+}
+
 #[tokio::test]
 async fn outfit_private_reservation_blocks_native_operation_and_asset_repurposing() {
     let server = Server::start().await;

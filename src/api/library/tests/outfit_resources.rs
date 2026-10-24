@@ -405,7 +405,7 @@ fn binding(avatar: &AvatarDescriptor) -> Value {
 }
 
 #[tokio::test]
-async fn private_binding_is_owner_scoped_immutable_and_does_not_publish_or_equip() {
+async fn private_binding_is_owner_scoped_replaceable_and_does_not_publish_or_equip() {
     let server = Server::start().await;
     let first = upload_private(&server, "local-first").await;
     let second = upload_private(&server, "local-second").await;
@@ -427,9 +427,13 @@ async fn private_binding_is_owner_scoped_immutable_and_does_not_publish_or_equip
         assert_eq!(response.status(), 200, "{}", response.text().await.unwrap());
         assert_eq!(response.json::<Value>().await.unwrap(), input);
     }
+    // The owner may replace the source's package with another of their own verified private assets.
     let mut changed = input.clone();
     changed["asset_id"] = json!(second.asset_id);
-    assert_eq!(request(&changed, 1).send().await.unwrap().status(), 409);
+    changed["raw_sha256"] = json!(faster_hex::hex_string(&second.raw_sha256));
+    let replaced = request(&changed, 1).send().await.unwrap();
+    assert_eq!(replaced.status(), 200, "{}", replaced.text().await.unwrap());
+    assert_eq!(replaced.json::<Value>().await.unwrap()["asset_id"], json!(second.asset_id));
     changed = input.clone();
     changed["reference"]["format"] = json!("YSM_PLAIN");
     assert_eq!(request(&changed, 1).send().await.unwrap().status(), 409);

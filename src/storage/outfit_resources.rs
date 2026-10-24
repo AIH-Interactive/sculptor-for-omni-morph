@@ -179,7 +179,21 @@ pub(super) fn bind(
         .map_err(sqlite::sql_error)?;
     if let Some(prior) = prior {
         if prior != encoded {
-            return Err(ErrorCode::Conflict);
+            // The owner republished the same local source with a newer packaging (for example after a client
+            // parser fix). The native identity was verified above, so the owner's latest package replaces it.
+            transaction
+                .execute(
+                    "UPDATE outfit_local_resources SET binding_json = ?5
+                     WHERE owner_uuid = ?1 AND local_id = ?2 AND source_hash = ?3 AND model_type = ?4",
+                    params![
+                        owner.to_string(),
+                        local_id.to_string(),
+                        content_hash,
+                        format,
+                        encoded
+                    ],
+                )
+                .map_err(sqlite::sql_error)?;
         }
     } else {
         transaction
