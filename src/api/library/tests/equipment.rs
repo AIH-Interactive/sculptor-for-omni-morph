@@ -242,7 +242,7 @@ async fn blocking_overrides_an_existing_private_render_opt_in_and_rejects_reopen
         server
             .state
             .storage
-            .library_equip(owner_admin, &id, &input)
+            .library_equip(owner_admin, &id, &input, &server.base, &crate::service::outfit_limits::OutfitLimits::default())
             .unwrap_err(),
         ErrorCode::Forbidden
     );

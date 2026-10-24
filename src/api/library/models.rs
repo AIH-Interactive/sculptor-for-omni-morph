@@ -11,11 +11,14 @@ pub async fn equip(
 ) -> Result<Response> {
     let actor = actor(&state, &headers).await?;
     let input = parse_json(body)?;
+    let origin = equipment_origin(&headers)?;
+    let limits = state.config.read().await.outfit.limits.clone();
     let storage = state.storage.clone();
     let model_revision = input.model_revision;
     let show_private_equipment = input.show_private_equipment;
     let model_id = id.clone();
-    let result = blocking(move || storage.library_equip(actor, &model_id, &input)).await?;
+    let result =
+        blocking(move || storage.library_equip(actor, &model_id, &input, &origin, &limits)).await?;
     crate::service::equipment::changed(&state, actor.uuid).await;
     let primary = result.primary.as_ref().ok_or(ErrorCode::Internal)?;
     json_response(json!({

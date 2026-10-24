@@ -3,6 +3,7 @@ use std::sync::Arc;
 
 /// Old-version fixtures start from current storage; restore the actual former receipt contract before relabeling.
 pub(crate) fn restore_legacy_download_receipts(database: &Connection) {
+    database.execute_batch("DROP TABLE outfit_private_uploads; DROP TABLE outfit_private_sources; DROP TABLE outfit_local_resources;").unwrap();
     let (_, receipt) = include_str!("../library.sql")
         .split_once("CREATE TABLE library_download_receipts")
         .unwrap();

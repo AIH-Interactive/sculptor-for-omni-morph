@@ -11,6 +11,14 @@ use uuid::Uuid;
 
 mod sqlite;
 pub(crate) mod outfit;
+pub(crate) mod outfit_apply;
+pub(crate) mod outfit_resources;
+pub(crate) mod outfit_uploads;
+mod outfit_sources;
+pub(crate) mod outfit_projection;
+pub(crate) mod outfit_state;
+mod outfit_legacy;
+mod legacy_publication;
 pub mod library;
 pub(crate) mod recycle;
 pub(crate) mod library_equipment;
@@ -179,6 +187,7 @@ impl Storage {
             blob_publication: Mutex::new(()),
             database: Mutex::new(database),
         };
+        storage.recover_legacy_publications()?;
         storage.transaction(|_| Ok(()))?;
         Ok(storage)
     }
@@ -426,11 +435,34 @@ impl Storage {
 
     pub fn import_legacy(
         &self,
-        mut avatar: AvatarDescriptor,
+        avatar: AvatarDescriptor,
         force_equipped: bool,
     ) -> Result<AvatarDescriptor> {
+        self.import_legacy_with_outfit_limits(
+            avatar,
+            force_equipped,
+            &crate::service::outfit_limits::OutfitLimits::default(),
+        )
+    }
+
+    pub(crate) fn import_legacy_with_outfit_limits(
+        &self,
+        avatar: AvatarDescriptor,
+        force_equipped: bool,
+        limits: &crate::service::outfit_limits::OutfitLimits,
+    ) -> Result<AvatarDescriptor> {
+        self.import_legacy_publication(avatar, force_equipped, limits, None)
+    }
+
+    fn import_legacy_publication(
+        &self,
+        mut avatar: AvatarDescriptor,
+        force_equipped: bool,
+        limits: &crate::service::outfit_limits::OutfitLimits,
+        publication: Option<Uuid>,
+    ) -> Result<AvatarDescriptor> {
         let owner = Uuid::parse_str(&avatar.owner).map_err(|_| ErrorCode::InvalidMessage)?;
-        self.transaction(|manifest| {
+        let prepare = |manifest: &mut Manifest| {
             let account = manifest.owners.entry(owner).or_default();
             let unchanged = account.legacy_sha256.as_ref() == Some(&avatar.raw_sha256);
             if unchanged {
@@ -448,7 +480,7 @@ impl Storage {
                         select(account, Some(asset_ref(&current)), compatibility);
                     }
                     if current.raw_sha256 == avatar.raw_sha256 {
-                        return Ok(current);
+                        return Ok((current, force_equipped));
                     }
                 }
             }
@@ -467,8 +499,19 @@ impl Storage {
             );
             let compatibility = (avatar.model_type == 1).then(|| asset_ref(&avatar));
             select(account, Some(asset_ref(&avatar)), compatibility);
-            Ok(avatar.clone())
-        })
+            Ok((avatar.clone(), true))
+        };
+        let (result, _) =
+            self.transaction_with_library_result(prepare, |transaction, (avatar, normalize)| {
+                if *normalize {
+                    outfit_legacy::normalize_native(transaction, owner, Some(avatar), limits)?;
+                }
+                if let Some(operation) = publication {
+                    legacy_publication::finish(transaction, owner, operation)?;
+                }
+                Ok(())
+            })?;
+        Ok(result)
     }
 
     pub fn commit_avatar(
@@ -597,15 +640,28 @@ impl Storage {
     }
 
     pub fn equip(&self, owner: Uuid, request: &Equip) -> Result<EquippedState> {
+        self.equip_with_outfit_limits(
+            owner,
+            request,
+            &crate::service::outfit_limits::OutfitLimits::default(),
+        )
+    }
+
+    pub(crate) fn equip_with_outfit_limits(
+        &self,
+        owner: Uuid,
+        request: &Equip,
+        limits: &crate::service::outfit_limits::OutfitLimits,
+    ) -> Result<EquippedState> {
         if !request.clear && self.library_asset_bound(owner, &request.asset_id)? {
             return Err(ErrorCode::Forbidden);
         }
         let fingerprint = sha256(&[b"equip".as_slice(), &request.encode_to_vec()].concat());
-        self.transaction(|manifest| {
+        let prepare = |manifest: &mut Manifest| {
             if let Some(result) =
                 replay::<EquippedState>(manifest, owner, &request.operation_id, &fingerprint)?
             {
-                return Ok(result);
+                return Ok((result, false));
             }
             let account = manifest.owners.entry(owner).or_default();
             if account.revision != request.expected_revision {
@@ -639,23 +695,60 @@ impl Storage {
                 &fingerprint,
                 &result,
             )?;
-            Ok(result)
-        })
+            Ok((result, true))
+        };
+        let (result, _) =
+            self.transaction_with_library_result(prepare, |transaction, (result, fresh)| {
+                if *fresh {
+                    outfit_legacy::normalize_native(
+                        transaction,
+                        owner,
+                        result.primary.as_ref(),
+                        limits,
+                    )?;
+                }
+                Ok(())
+            })?;
+        Ok(result)
     }
 
     pub fn delete(&self, owner: Uuid, request: &Delete) -> Result<Ack> {
+        self.delete_with_outfit_limits(
+            owner,
+            request,
+            &crate::service::outfit_limits::OutfitLimits::default(),
+            false,
+        )
+    }
+
+    pub(crate) fn delete_with_outfit_limits(
+        &self,
+        owner: Uuid,
+        request: &Delete,
+        limits: &crate::service::outfit_limits::OutfitLimits,
+        clear_entire_outfit: bool,
+    ) -> Result<Ack> {
         let _publication = self.lock_blob_files()?;
         if self.library_asset_bound(owner, &request.asset_id)? {
             return Err(ErrorCode::Forbidden);
         }
-        let fingerprint = sha256(&[b"delete".as_slice(), &request.encode_to_vec()].concat());
-        let result = self.transaction(|manifest| {
+        let kind = if clear_entire_outfit {
+            b"delete-legacy-outfit".as_slice()
+        } else {
+            b"delete".as_slice()
+        };
+        let fingerprint = sha256(&[kind, &request.encode_to_vec()].concat());
+        let prepare = |manifest: &mut Manifest| {
             if let Some(result) =
                 replay::<Ack>(manifest, owner, &request.operation_id, &fingerprint)?
             {
-                return Ok(result);
+                return Ok((result, false));
             }
             let account = manifest.owners.get_mut(&owner).ok_or(ErrorCode::NotFound)?;
+            let removed_base = account
+                .primary
+                .as_ref()
+                .is_some_and(|reference| reference.id == request.asset_id);
             let history = account
                 .assets
                 .get_mut(&request.asset_id)
@@ -674,11 +767,11 @@ impl Storage {
             let primary = account
                 .primary
                 .clone()
-                .filter(|reference| reference.id != request.asset_id);
+                .filter(|reference| !clear_entire_outfit && reference.id != request.asset_id);
             let compatibility = account
                 .compatibility
                 .clone()
-                .filter(|reference| reference.id != request.asset_id);
+                .filter(|reference| !clear_entire_outfit && reference.id != request.asset_id);
             let previous_revision = account.revision;
             select(account, primary, compatibility);
             if account.revision == previous_revision {
@@ -696,8 +789,15 @@ impl Storage {
                 &fingerprint,
                 &result,
             )?;
-            Ok(result)
-        })?;
+            Ok((result, clear_entire_outfit || removed_base))
+        };
+        let (result, _) =
+            self.transaction_with_library_result(prepare, |transaction, (_, normalize)| {
+                if *normalize {
+                    outfit_legacy::normalize_native(transaction, owner, None, limits)?;
+                }
+                Ok(())
+            })?;
         self.clean_deleted_wardrobe(owner, &request.asset_id)?;
         Ok(result)
     }

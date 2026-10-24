@@ -72,8 +72,9 @@ where
                 let owner = *owner;
                 let asset = asset.clone();
                 let revision = *revision;
+                let limits = state.config.read().await.outfit.limits.clone();
                 crate::service::library::work(move || {
-                    storage.library_resource_access(
+                    storage.library_resource_access_with_outfit_limits(
                         owner,
                         &asset,
                         revision,
@@ -82,6 +83,7 @@ where
                             admin_context: false,
                             granted: false,
                         },
+                        &limits,
                     )
                 })
                 .await

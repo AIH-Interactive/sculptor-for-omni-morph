@@ -59,6 +59,8 @@ impl Storage {
         actor: Actor,
         id: &str,
         input: &LibraryEquip,
+        origin: &str,
+        limits: &crate::service::outfit_limits::OutfitLimits,
     ) -> Result<EquippedState> {
         let model_uuid = crate::service::resource::operation_id(id)?;
         let operation = crate::service::resource::operation_id(&input.operation_id)?;
@@ -227,6 +229,23 @@ impl Storage {
                                 params![actor.uuid.to_string(), alias_id, showing],
                             ).map_err(sql_error)?;
                         }
+                        let showing = if item.policy.visibility == Visibility::Private {
+                            input.show_equipment.unwrap_or(input.show_private_equipment)
+                        } else {
+                            transaction.query_row(
+                                "SELECT COALESCE((SELECT show_equipment FROM library_wardrobe_settings
+                                 WHERE owner_uuid = ?1 AND asset_id = ?2 AND asset_revision = 1), 1)",
+                                params![actor.uuid.to_string(), alias_id], |row| row.get(0),
+                            ).map_err(sql_error)?
+                        };
+                        let reference = crate::service::outfit::ResourceRef::Cloud {
+                            origin: origin.into(), resource_id: model_uuid, revision: input.model_revision,
+                            content_hash: faster_hex::hex_string(&descriptor.raw_sha256),
+                            format: item.summary.model_type.clone().ok_or(ErrorCode::Internal)?,
+                        };
+                        super::outfit_legacy::replace_configuration(
+                            transaction, actor.uuid, Some(reference), showing, limits,
+                        )?;
                         Ok(result.encode_to_vec())
                     },
                 )?;
@@ -237,4 +256,5 @@ impl Storage {
             },
         )
     }
+
 }

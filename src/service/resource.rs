@@ -190,7 +190,14 @@ async fn grant_upload_inner(
         return Err(ErrorCode::Forbidden);
     }
     let raw_length = descriptor.raw_length;
+    let outfit_limits = config.outfit.limits.clone();
     drop(config);
+    let storage = state.storage.clone();
+    let private_request = request.clone();
+    super::library::work(move || {
+        storage.outfit_authorize_upload(owner, &private_request, &outfit_limits)
+    })
+    .await?;
     let fingerprint =
         crate::storage::sha256(&[b"upload".as_slice(), &request.encode_to_vec()].concat());
     state
@@ -407,6 +414,25 @@ async fn commit_upload_inner(
     context: Option<super::library::uploads::CommitContext>,
 ) -> Result<AvatarDescriptor, ErrorCode> {
     let operation = operation_id(&request.operation_id)?;
+    let outfit_limits = state.config.read().await.outfit.limits.clone();
+    let storage = state.storage.clone();
+    let private_limits = outfit_limits.clone();
+    let private_completed = super::library::work(move || {
+        storage.outfit_completed_upload(owner, operation, &private_limits)
+    })
+    .await?;
+    if let Some(completed) = private_completed {
+        if completed.raw_sha256 != request.raw_sha256 || completed.raw_length != request.raw_length {
+            return Err(ErrorCode::Conflict);
+        }
+        state
+            .transfers
+            .pending
+            .lock()
+            .map_err(|_| ErrorCode::Internal)?
+            .remove(&(owner, operation));
+        return Ok(completed);
+    }
     if let Some(completed) = state.storage.completed_upload(owner, request)? {
         if let Some(context) = context {
             let storage = state.storage.clone();
@@ -508,6 +534,9 @@ async fn commit_upload_inner(
             max_assets,
             |transaction, descriptor| {
                 super::library::record_identity(transaction, descriptor, &inspected)?;
+                crate::storage::outfit_uploads::publish(
+                    transaction, owner, &upload_operation, descriptor, &outfit_limits,
+                )?;
                 if let Some(context) = context {
                     context.publish(transaction, descriptor, &inspected)?;
                 }
@@ -567,9 +596,19 @@ pub async fn ensure_legacy_import(
     owner: Uuid,
     force_equipped: bool,
 ) -> Result<(), ErrorCode> {
+    import_legacy_if_needed(state, owner, force_equipped)
+        .await
+        .map(|_| ())
+}
+
+async fn import_legacy_if_needed(
+    state: &AppState,
+    owner: Uuid,
+    force_equipped: bool,
+) -> Result<bool, ErrorCode> {
     let path = legacy_read_path(owner, false);
     if !path.exists() {
-        return Ok(());
+        return Ok(false);
     }
     let metadata = fs::metadata(&path).await.map_err(|_| ErrorCode::Internal)?;
     let limit = crate::utils::get_limit_as_bytes(
@@ -585,7 +624,7 @@ pub async fn ensure_legacy_import(
     let raw_length = copy_bounded(&path, &snapshot.0, limit as u64).await?;
     let hash = raw_file_hash(&snapshot.0).await?;
     if !force_equipped && state.storage.legacy_hash_matches(owner, &hash) {
-        return Ok(());
+        return Ok(false);
     }
     let legacy_hash = legacy_file_hash(&snapshot.0).await?;
     let inspection_path = snapshot.0.clone();
@@ -596,9 +635,18 @@ pub async fn ensure_legacy_import(
     .await
     .map_err(|_| ErrorCode::Internal)??;
     let model_type = identity.model_type as i32;
+    let limits = state.config.read().await.outfit.limits.clone();
     let _publication = state.storage.lock_blob_files()?;
-    state.storage.publish_staged_locked(&snapshot.0, &hash, false)?;
-    state.storage.import_legacy(
+    if !state
+        .storage
+        .legacy_file_matches(owner, &hash, limit as u64)?
+    {
+        return Ok(false);
+    }
+    state
+        .storage
+        .publish_staged_locked(&snapshot.0, &hash, false)?;
+    state.storage.import_legacy_with_outfit_limits(
         AvatarDescriptor {
             owner: owner.to_string(),
             asset_id: "avatar".into(),
@@ -616,7 +664,39 @@ pub async fn ensure_legacy_import(
             ..Default::default()
         },
         force_equipped,
+        &limits,
     )?;
+    Ok(true)
+}
+
+pub(crate) async fn equip_legacy_selection(
+    state: &AppState,
+    owner: Uuid,
+    asset: Option<&str>,
+) -> Result<(), ErrorCode> {
+    if asset == Some("avatar") && import_legacy_if_needed(state, owner, false).await? {
+        // A first legacy-file import already selected and normalized this base.
+        return Ok(());
+    }
+    let avatar = asset
+        .map(|asset| state.storage.avatar(owner, asset, 0))
+        .transpose()?;
+    let equipped = state.storage.equipped(owner)?;
+    let limits = state.config.read().await.outfit.limits.clone();
+    let request = crate::protocol::v1::Equip {
+        operation_id: new_operation_id(),
+        expected_revision: equipped.revision,
+        clear: avatar.is_none(),
+        asset_id: avatar
+            .as_ref()
+            .map(|avatar| avatar.asset_id.clone())
+            .unwrap_or_default(),
+        asset_revision: avatar.as_ref().map(|avatar| avatar.revision).unwrap_or(0),
+        ..Default::default()
+    };
+    state
+        .storage
+        .equip_with_outfit_limits(owner, &request, &limits)?;
     Ok(())
 }
 
@@ -691,24 +771,52 @@ pub async fn upload_legacy(state: &AppState, token: &str, body: axum::body::Body
         file.sync_all().await.map_err(internal_and_log)?;
         drop(file);
         let path = staging.0.clone();
-        tokio::task::spawn_blocking(move || super::package::inspect_upload(&path, max_nodes))
-            .await
-            .map_err(internal_and_log)?
-            .map_err(legacy_error)?;
-        let target = legacy_path(user.uuid, false);
-        fs::create_dir_all(target.parent().ok_or(ApiError::Internal)?)
-            .await
-            .map_err(internal_and_log)?;
-        fs::rename(&staging.0, target)
-            .await
-            .map_err(internal_and_log)
+        let inspected =
+            tokio::task::spawn_blocking(move || super::package::inspect_upload(&path, max_nodes))
+                .await
+                .map_err(internal_and_log)?
+                .map_err(legacy_error)?;
+        Ok(inspected)
     })
     .await
     .map_err(|_| ApiError::BadRequest)?;
-    received?;
-    ensure_legacy_import(state, user.uuid, true)
+    let inspected = received?;
+    commit_legacy_staged(state, user.uuid, &staging.0, inspected).await
+}
+
+async fn commit_legacy_staged(
+    state: &AppState,
+    owner: Uuid,
+    staged: &std::path::Path,
+    inspected: super::package::PackageIdentity,
+) -> ApiResult<()> {
+    let raw_sha256 = raw_file_hash(staged).await.map_err(legacy_error)?;
+    let legacy_figura_hash = legacy_file_hash(staged).await.map_err(legacy_error)?;
+    let raw_length = fs::metadata(staged).await.map_err(internal_and_log)?.len();
+    let model_type = inspected.model_type as i32;
+    let avatar = AvatarDescriptor {
+        owner: owner.to_string(),
+        asset_id: "avatar".into(),
+        model_type,
+        distribution_format: if model_type == 1 {
+            DistributionFormat::FiguraCompressedNbt
+        } else {
+            DistributionFormat::YsmDistributionPackage
+        } as i32,
+        raw_sha256: raw_sha256.clone(),
+        raw_length,
+        content_sha256: inspected.content_hash.unwrap_or(raw_sha256),
+        legacy_figura_hash,
+        required_capabilities: vec![model_type],
+        ..Default::default()
+    };
+    let limits = state.config.read().await.outfit.limits.clone();
+    let storage = state.storage.clone();
+    let staged = staged.to_path_buf();
+    super::library::work(move || storage.publish_legacy_file(&staged, avatar, &limits))
         .await
-        .map_err(legacy_error)
+        .map_err(legacy_error)?;
+    Ok(())
 }
 
 pub async fn write_legacy(
@@ -728,10 +836,11 @@ pub async fn write_legacy(
         .map_err(internal_and_log)?;
     let inspection = staging.0.clone();
     let max_nodes = state.config.read().await.limitations.max_package_nodes;
-    tokio::task::spawn_blocking(move || super::package::inspect_upload(&inspection, max_nodes))
-        .await
-        .map_err(|_| ApiError::Internal)?
-        .map_err(legacy_error)?;
+    let inspected =
+        tokio::task::spawn_blocking(move || super::package::inspect_upload(&inspection, max_nodes))
+            .await
+            .map_err(|_| ApiError::Internal)?
+            .map_err(legacy_error)?;
     // Windows FlushFileBuffers requires a writable handle for this staged upload.
     fs::OpenOptions::new()
         .write(true)
@@ -741,9 +850,13 @@ pub async fn write_legacy(
         .sync_all()
         .await
         .map_err(internal_and_log)?;
-    fs::rename(&staging.0, target)
-        .await
-        .map_err(internal_and_log)
+    if temporary {
+        fs::rename(&staging.0, target)
+            .await
+            .map_err(internal_and_log)
+    } else {
+        commit_legacy_staged(state, owner, &staging.0, inspected).await
+    }
 }
 
 async fn copy_bounded(
@@ -823,6 +936,7 @@ pub async fn download_legacy(
             .await
             .map_err(legacy_error)?;
         let storage = state.storage.clone();
+        let limits = state.config.read().await.outfit.limits.clone();
         super::library::work(move || {
             let equipped = storage.library_project_equipped(owner, viewer)?;
             let avatar = if supports_ysm {
@@ -831,7 +945,7 @@ pub async fn download_legacy(
                 equipped.figura_compatibility
             }
             .ok_or(ErrorCode::NotFound)?;
-            storage.library_resource_access(
+            storage.library_resource_access_with_outfit_limits(
                 owner,
                 &avatar.asset_id,
                 avatar.revision,
@@ -840,6 +954,7 @@ pub async fn download_legacy(
                     admin_context: false,
                     granted: false,
                 },
+                &limits,
             )?;
             let path = storage.blob_path(&avatar.raw_sha256)?;
             Ok((path, Some(avatar)))
@@ -889,24 +1004,56 @@ pub async fn delete_legacy_owner(state: &AppState, owner: Uuid) -> ApiResult<()>
         .map_err(legacy_error)?;
     let equipped = state.storage.equipped(owner).map_err(legacy_error)?;
     let avatar = match equipped.figura_compatibility {
-        Some(avatar) => avatar,
-        None => state
-            .storage
-            .avatar(owner, "avatar", 0)
-            .map_err(legacy_error)?,
+        Some(avatar) => Some(avatar),
+        None => match state.storage.avatar(owner, "avatar", 0) {
+            Ok(avatar) => Some(avatar),
+            Err(ErrorCode::NotFound) => None,
+            Err(error) => return Err(legacy_error(error)),
+        },
     };
-    state
-        .storage
-        .delete(
-            owner,
-            &crate::protocol::v1::Delete {
-                operation_id: new_operation_id(),
-                asset_id: avatar.asset_id.clone(),
-                expected_revision: avatar.revision,
-            },
-        )
-        .map_err(legacy_error)?;
-    if avatar.asset_id == "avatar" && legacy_read_path(owner, false).exists() {
+    let limits = state.config.read().await.outfit.limits.clone();
+    let source_bound = match &avatar {
+        Some(avatar) => state
+            .storage
+            .library_asset_bound(owner, &avatar.asset_id)
+            .map_err(legacy_error)?,
+        None => false,
+    };
+    if let Some(avatar) = avatar.as_ref().filter(|_| !source_bound) {
+        state
+            .storage
+            .delete_with_outfit_limits(
+                owner,
+                &crate::protocol::v1::Delete {
+                    operation_id: new_operation_id(),
+                    asset_id: avatar.asset_id.clone(),
+                    expected_revision: avatar.revision,
+                },
+                &limits,
+                true,
+            )
+            .map_err(legacy_error)?;
+    } else {
+        // Clearing equipment must not delete a catalog source or require a local avatar file.
+        state
+            .storage
+            .equip_with_outfit_limits(
+                owner,
+                &crate::protocol::v1::Equip {
+                    operation_id: new_operation_id(),
+                    expected_revision: equipped.revision,
+                    clear: true,
+                    ..Default::default()
+                },
+                &limits,
+            )
+            .map_err(legacy_error)?;
+    }
+    if avatar
+        .as_ref()
+        .is_some_and(|avatar| avatar.asset_id == "avatar")
+        && legacy_read_path(owner, false).exists()
+    {
         fs::remove_file(legacy_read_path(owner, false))
             .await
             .map_err(internal_and_log)?;

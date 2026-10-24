@@ -378,7 +378,7 @@ async fn owner_presets_round_trip_with_cas_and_authentication() {
         .unwrap();
     assert_eq!(capabilities["outfits_v1"]["presets"], true);
     assert_eq!(capabilities["outfits_v1"]["publication"], true);
-    assert_eq!(capabilities["outfits_v1"]["apply"], false);
+    assert_eq!(capabilities["outfits_v1"]["apply"], true);
     let fixture: Value = serde_json::from_str(include_str!(
         "../../../../tests/fixtures/outfit-v1/duplicate-instances.json"
     ))

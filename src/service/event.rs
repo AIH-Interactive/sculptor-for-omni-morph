@@ -5,6 +5,10 @@ use uuid::Uuid;
 /// Business events are encoded separately by each connection's protocol adapter.
 #[derive(Clone, Debug, PartialEq)]
 pub enum CloudEvent {
+    OutfitStateChanged {
+        owner: Uuid,
+        instance: Uuid,
+    },
     FiguraPing {
         owner: Uuid,
         function_id: u32,

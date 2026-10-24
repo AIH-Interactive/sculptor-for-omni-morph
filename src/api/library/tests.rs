@@ -24,6 +24,17 @@ mod collection;
 mod wardrobe;
 mod subscriptions;
 mod outfits;
+mod outfit_apply;
+mod outfit_resources;
+mod outfit_legacy;
+mod outfit_catalog;
+mod outfit_author;
+mod outfit_projection;
+mod outfit_read_access;
+mod outfit_uploads;
+mod outfit_observers;
+mod outfit_events;
+mod outfit_http_apply;
 
 static TEST_SERVERS: std::sync::LazyLock<Arc<tokio::sync::Semaphore>> =
     std::sync::LazyLock::new(|| Arc::new(tokio::sync::Semaphore::new(4)));
@@ -150,6 +161,7 @@ impl Server {
                 axum::routing::put(crate::api::lambda::internal::temp_avatar),
             )
             .route("/ws", axum::routing::get(crate::api::figura::ws))
+            .route("/api/equip", axum::routing::post(crate::api::figura::profile::equip_avatar))
             .route(
                 "/api/:uuid",
                 axum::routing::get(crate::api::figura::profile::user_info),

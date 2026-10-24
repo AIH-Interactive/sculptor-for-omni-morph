@@ -174,8 +174,9 @@ pub async fn dispatch(
             let asset = request.asset_id.clone();
             let revision = request.revision;
             let observer = scope.owner;
+            let limits = state.config.read().await.outfit.limits.clone();
             crate::service::library::work(move || {
-                storage.library_resource_access(
+                storage.library_resource_access_with_outfit_limits(
                     owner,
                     &asset,
                     revision,
@@ -184,6 +185,7 @@ pub async fn dispatch(
                         admin_context: false,
                         granted: false,
                     },
+                    &limits,
                 )
             })
             .await?;
@@ -207,7 +209,8 @@ pub async fn dispatch(
                 return Err(ErrorCode::InvalidMessage);
             }
             let previous = state.storage.equipped(scope.owner)?.revision;
-            let result = state.storage.equip(scope.owner, &request)?;
+            let limits = state.config.read().await.outfit.limits.clone();
+            let result = state.storage.equip_with_outfit_limits(scope.owner, &request, &limits)?;
             if result.revision > previous {
                 equipment::changed(state, scope.owner).await;
             }
@@ -219,7 +222,10 @@ pub async fn dispatch(
                 return Err(ErrorCode::InvalidMessage);
             }
             let previous = state.storage.equipped(scope.owner)?.revision;
-            let result = state.storage.delete(scope.owner, &request)?;
+            let limits = state.config.read().await.outfit.limits.clone();
+            let result = state.storage.delete_with_outfit_limits(
+                scope.owner, &request, &limits, false,
+            )?;
             if result.revision > previous {
                 equipment::deleted(state, scope.owner).await;
             }

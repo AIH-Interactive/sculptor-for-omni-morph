@@ -47,9 +47,6 @@ pub async fn upload_avatar(
         );
         crate::service::resource::write_legacy(&state, user_info.uuid, false, &request_data)
             .await?;
-        crate::service::resource::ensure_legacy_import(&state, user_info.uuid, true)
-            .await
-            .map_err(crate::service::resource::legacy_error)?;
     }
     Ok("ok".to_string())
 }

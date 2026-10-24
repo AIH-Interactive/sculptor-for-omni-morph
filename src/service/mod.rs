@@ -1,6 +1,7 @@
 pub mod equipment;
 pub mod outfit;
 pub mod outfit_limits;
+pub(crate) mod outfit_capabilities;
 pub mod library;
 pub mod library_admin;
 pub mod library_policy;

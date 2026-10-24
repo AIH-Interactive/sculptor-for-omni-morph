@@ -26,6 +26,7 @@ pub(crate) async fn event_visible(
 ) -> Result<bool> {
     use crate::protocol::v1::envelope::Body;
     let (owner, body) = match event {
+        CloudEvent::OutfitStateChanged { .. } => return Ok(false),
         CloudEvent::AvatarChanged { .. } | CloudEvent::LegacyRaw(_) => return Ok(true),
         CloudEvent::FiguraPing { owner, .. } => (*owner, None),
         CloudEvent::Ysm {
@@ -205,6 +206,32 @@ pub(super) fn resource_access(
     revision: u64,
     observer: Actor,
 ) -> Result<()> {
+    resource_access_with_outfit_limits(
+        database,
+        owner,
+        asset,
+        revision,
+        observer,
+        &crate::service::outfit_limits::OutfitLimits::default(),
+    )
+}
+
+pub(super) fn resource_access_with_outfit_limits(
+    database: &Connection,
+    owner: Uuid,
+    asset: &str,
+    revision: u64,
+    observer: Actor,
+    limits: &crate::service::outfit_limits::OutfitLimits,
+) -> Result<()> {
+    crate::storage::outfit_projection::native_access(
+        database,
+        owner,
+        observer.uuid,
+        asset,
+        revision,
+        limits,
+    )?;
     if observer.uuid != owner {
         let banned: bool = database
             .query_row(
@@ -236,11 +263,14 @@ pub(super) fn resource_access(
         .map_err(sql_error)?;
     let Some((source, canonical)) = source else {
         if observer.uuid != owner {
-            let hidden: bool = database.query_row(
-                "SELECT EXISTS(SELECT 1 FROM library_wardrobe_settings WHERE owner_uuid = ?1
+            let hidden: bool = database
+                .query_row(
+                    "SELECT EXISTS(SELECT 1 FROM library_wardrobe_settings WHERE owner_uuid = ?1
                  AND asset_id = ?2 AND asset_revision = ?3 AND show_equipment = 0)",
-                params![owner.to_string(), asset, library::sql_integer(revision)?], |row| row.get(0),
-            ).map_err(sql_error)?;
+                    params![owner.to_string(), asset, library::sql_integer(revision)?],
+                    |row| row.get(0),
+                )
+                .map_err(sql_error)?;
             if hidden {
                 return Err(ErrorCode::NotFound);
             }

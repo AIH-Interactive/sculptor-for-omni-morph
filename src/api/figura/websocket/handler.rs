@@ -425,7 +425,7 @@ fn encode_event(event: CloudEvent) -> Option<Vec<u8>> {
         CloudEvent::AvatarChanged { owner, .. } => Some(S2CMessage::Event(owner).into()),
         CloudEvent::LegacyRaw(bytes) => Some(bytes),
         // Typed YSM is handled by forward_event and encoded as M7, never protobuf.
-        CloudEvent::Ysm { .. } => None,
+        CloudEvent::Ysm { .. } | CloudEvent::OutfitStateChanged { .. } => None,
     }
 }
 

@@ -499,7 +499,7 @@ pub fn capabilities(limits: &OutfitLimits) -> serde_json::Value {
     let mut value = serde_json::to_value(limits).expect("validated outfit limits");
     let extension = serde_json::json!({
         "schema_version": 1, "configuration": true, "presets": true,
-        "apply": false, "events": false, "publication": true, "standard_anchors": STANDARD_ANCHORS,
+        "apply": true, "events": true, "publication": true, "standard_anchors": STANDARD_ANCHORS,
         "limits": limits
     });
     value

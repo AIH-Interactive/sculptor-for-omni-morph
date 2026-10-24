@@ -5,6 +5,11 @@ mod reports;
 mod images;
 mod models;
 mod outfits;
+mod private_uploads;
+mod outfit_observers;
+mod outfit_events;
+mod outfit_state;
+mod outfit_local_sources;
 mod collection;
 mod transfers;
 mod uploads;
@@ -92,8 +97,12 @@ impl IntoResponse for LibraryError {
 }
 
 pub fn json_response(value: Value) -> Result<Response> {
+    json_response_limited(value, 65536)
+}
+
+fn json_response_limited(value: Value, max_bytes: usize) -> Result<Response> {
     let bytes = serde_json::to_vec(&value).map_err(|_| ErrorCode::Internal)?;
-    if bytes.len() > 65536 {
+    if bytes.len() > max_bytes {
         return Err(ErrorCode::Internal.into());
     }
     Ok(([("content-type", "application/json")], bytes).into_response())
@@ -151,6 +160,38 @@ pub(crate) fn origin(headers: &HeaderMap) -> Result<String> {
         return Err(ErrorCode::Forbidden.into());
     }
     Ok(url.origin().ascii_serialization())
+}
+
+/// Legacy catalog clients lack the explicit namespace header. The proxy scheme
+/// labels this server's resources; it never grants access or selects another host.
+fn equipment_origin(headers: &HeaderMap) -> Result<String> {
+    if headers.contains_key("x-omnimorph-origin") {
+        return origin(headers);
+    }
+    if headers.get_all("host").iter().count() != 1
+        || headers.get_all("x-forwarded-proto").iter().count() > 1
+    {
+        return Err(ErrorCode::Forbidden.into());
+    }
+    let scheme = match headers.get("x-forwarded-proto") {
+        Some(value) => value.to_str().map_err(|_| ErrorCode::InvalidMessage)?,
+        None => "http", // The native listener uses HTTP; TLS is terminated by the proxy.
+    };
+    if !matches!(scheme, "http" | "https") {
+        return Err(ErrorCode::InvalidMessage.into());
+    }
+    let host = headers
+        .get("host")
+        .and_then(|value| value.to_str().ok())
+        .ok_or(ErrorCode::Forbidden)?;
+    let mut scoped = headers.clone();
+    scoped.insert(
+        "x-omnimorph-origin",
+        format!("{scheme}://{host}")
+            .parse()
+            .map_err(|_| ErrorCode::InvalidMessage)?,
+    );
+    origin(&scoped)
 }
 
 pub(crate) fn player(state: &AppState, headers: &HeaderMap) -> Result<Uuid> {
@@ -247,7 +288,29 @@ pub(crate) async fn actor_identity(state: &AppState, headers: &HeaderMap) -> Res
 
 pub fn router(state: AppState) -> Router<AppState> {
     Router::new()
-        .route("/api/library/v1/outfits/current", get(outfits::current))
+        .route(
+            "/api/library/v1/outfits/current",
+            get(outfits::current)
+                .put(outfits::apply)
+                .layer(DefaultBodyLimit::max(outfits::APPLY_JSON_MAX_BYTES)),
+        )
+        .route("/api/library/v1/outfit-events", get(outfit_events::upgrade))
+        .route("/api/library/v1/outfits/players/:owner/instances/:instance/state", get(outfit_state::read))
+        .route("/api/library/v1/outfits/instances/:instance/state", post(outfit_state::write))
+        .route("/api/library/v1/outfits/players/:owner", get(outfit_observers::snapshot))
+        .route("/api/library/v1/outfits/players/:owner/resources/:id", get(outfit_observers::download))
+        .route("/api/library/v1/outfits/resources/local", put(outfits::bind_local))
+        .route("/api/library/v1/outfits/resources/local/resolve", post(outfits::resolve_local))
+        .route("/api/library/v1/outfits/resources/local/body", post(outfit_local_sources::download))
+        .route("/api/library/v1/outfits/resources/uploads", post(private_uploads::reserve))
+        .route(
+            "/api/library/v1/outfits/resources/uploads/:operation/body",
+            put(private_uploads::upload).layer(DefaultBodyLimit::disable()),
+        )
+        .route(
+            "/api/library/v1/outfits/resources/uploads/:operation/commit",
+            post(private_uploads::commit),
+        )
         .route(
             "/api/library/v1/outfit-presets",
             get(outfits::list).post(outfits::save),
@@ -366,9 +429,14 @@ async fn dispatch(
         let (request, request_bytes) = if binary {
             (request, 0)
         } else {
+            let max_bytes = if method == Method::PUT && route == "/api/library/v1/outfits/current" {
+                outfits::APPLY_JSON_MAX_BYTES
+            } else {
+                65536
+            };
             let (parts, body) = request.into_parts();
             let bytes =
-                tokio::time::timeout(std::time::Duration::from_secs(15), to_bytes(body, 65536))
+                tokio::time::timeout(std::time::Duration::from_secs(15), to_bytes(body, max_bytes))
                     .await
                     .map_err(|_| ErrorCode::Offline)?
                     .map_err(|_| LibraryError::too_large())?;

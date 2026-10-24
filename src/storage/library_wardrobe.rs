@@ -36,7 +36,7 @@ pub(crate) struct WardrobeVisibility {
     pub show_equipment: bool,
 }
 
-fn banned(
+pub(super) fn banned(
     database: &rusqlite::Connection,
     owner: Uuid,
     asset: &str,

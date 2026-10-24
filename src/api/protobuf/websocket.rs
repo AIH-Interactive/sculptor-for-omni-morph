@@ -300,7 +300,7 @@ async fn event_body(
                 tombstone,
             })))
         }
-        CloudEvent::LegacyRaw(_) => Ok(None),
+        CloudEvent::LegacyRaw(_) | CloudEvent::OutfitStateChanged { .. } => Ok(None),
         CloudEvent::Ysm { body, .. } => Ok(Some(body)),
     }
 }

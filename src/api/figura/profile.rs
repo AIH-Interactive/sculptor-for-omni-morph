@@ -166,9 +166,47 @@ pub async fn upload_avatar(
     Ok("ok".to_string())
 }
 
-pub async fn equip_avatar(Token(token): Token, State(state): State<AppState>) -> ApiResult<&'static str> {
+#[derive(serde::Deserialize)]
+struct LegacyEquipSelection {
+    owner: Uuid,
+    id: String,
+}
+
+pub async fn equip_avatar(
+    Token(token): Token,
+    State(state): State<AppState>,
+    body: axum::body::Bytes,
+) -> ApiResult<&'static str> {
     debug!("[API] S2C : Equip");
     let uuid = crate::service::session::authenticate(&state, &token)?.uuid;
+    if !body.is_empty() {
+        let selected: Vec<LegacyEquipSelection> =
+            serde_json::from_slice(&body).map_err(|_| ApiError::BadRequest)?;
+        if selected.len() > 1 {
+            return Err(ApiError::BadRequest);
+        }
+        if let Some(selection) = selected.first() {
+            if selection.owner != uuid {
+                return Err(ApiError::Forbidden);
+            }
+            if selection.id.is_empty()
+                || selection.id.len() > 64
+                || !selection
+                    .id
+                    .bytes()
+                    .all(|value| value.is_ascii_alphanumeric() || matches!(value, b'_' | b'-'))
+            {
+                return Err(ApiError::BadRequest);
+            }
+        }
+        crate::service::resource::equip_legacy_selection(
+            &state,
+            uuid,
+            selected.first().map(|selection| selection.id.as_str()),
+        )
+        .await
+        .map_err(crate::service::resource::legacy_error)?;
+    }
     send_event(&state, &uuid).await;
     Ok("ok")
 }

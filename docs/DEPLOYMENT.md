@@ -102,6 +102,10 @@ Debug 关闭后明文连接立即停止，不能通过重试或日志开关绕�
 历史 /api//auth 与 /api//assets 双斜线，不能将它们重写为单斜线。
 将后端监听限制在代理可达的私有地址；代理日志不要记录认证查询、凭证头或文件正文。
 模型文件直接经过 HTTP/HTTPS，代理上传大小/超时需匹配后端配置与客户端上限。
+装扮修订使用 `/api/library/v1/outfit-events` WebSocket（子协议 `omnimorph.outfit.v1`），代理需支持 Upgrade；认证仍走原请求头。S5 公开 Apply/events，客户端通过原库 HTTP 读取授权配置/实例状态，动态上限来自 `[outfit.limits]`。旧客户端继续只见基础投影；真实 Minecraft 双客户端/光照/性能验收仍为 MANUAL/PENDING。
+代理应保留客户端请求的 Host，并将 X-Forwarded-Proto 覆盖为实际外部协议（单一 http 或 https）。
+新客户端显式携带自身源站；缺少该头的旧目录装备请求使用 Host 与代理协议记录本服务器的资源来源，
+直连原生 HTTP 监听时缺省为 http。代理协议只标记资源命名空间，不代替账号、资源授权或管理员校验。
 limitations.maxAvatarSize 的单位是十进制 KB，示例值 100 较小；按实际分发包调整，
 并保持在客户端 64 MiB 文件上限内。不能因开启 Debug 就关闭 TLS 信任或主机名检查。
 

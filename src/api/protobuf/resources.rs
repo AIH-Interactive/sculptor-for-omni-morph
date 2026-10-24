@@ -57,8 +57,9 @@ pub async fn download(
         let storage = state.storage.clone();
         let asset_id = asset.clone();
         let observer = scope.owner;
+        let limits = state.config.read().await.outfit.limits.clone();
         crate::service::library::work(move || {
-            storage.library_resource_access(
+            storage.library_resource_access_with_outfit_limits(
                 owner,
                 &asset_id,
                 revision,
@@ -67,6 +68,7 @@ pub async fn download(
                     admin_context: false,
                     granted: false,
                 },
+                &limits,
             )
         })
         .await?;

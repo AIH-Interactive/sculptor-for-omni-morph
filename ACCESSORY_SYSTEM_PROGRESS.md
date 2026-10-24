@@ -2,6 +2,10 @@
 
 依据客户端仓库 `ACCESSORY_SYSTEM_IMPLEMENTATION_PLAN.md`，按阶段 1～6 执行，禁止扩大范围。当前分支 `master`，基线 `a6b130b`；原 codex/accessory-system 已按用户要求合入并清理。
 
+## 最新：阶段五自动验收 PASS（2026-10-24，待当前 master 提交推送）
+
+整套 Apply/固定私有来源/观察者授权投影和旧基础投影已接通；复用原事务与认证，schema 11。独立 outfit-events 通知及 metadata 实例状态持久化接通，按配置/实例/固定来源/generation/sequence/state revision 隔离；恢复取基线，旧协议不消费新实例事件。apply/events 已公开 true。最终前台 cargo test 设置真实 Java classpath，187 PASS / 0 FAIL / 1 原有 ignored；编译32.61秒、测试26.11秒，父仓库 build/reports/outfit/stage5-final-backend.log。真实 Java OWNER CAS、原 Figura/Protobuf 观察者状态通知/读取/拒绝越权与重连定向2.29秒 PASS。真实 Minecraft 双客户端/GPU/GUI/光照/性能 MANUAL/PENDING，移交 S6。用户要求的局部收敛：缓存整理、批量授权和额外进程恢复延后，不新增验收门槛。主仓库 S5 检查点及远端 SHA 核对后再进 S6；历史早期 false 开关说明仅为当时快照。
+
 ## 阶段一：PASS（自动），人工 MANUAL/PENDING
 
 - 独立 JSON v1 契约、资源用途/精确引用、稳定实例与骨骼路径、变换/预算/图校验。

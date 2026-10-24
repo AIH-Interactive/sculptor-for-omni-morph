@@ -387,13 +387,32 @@ impl Storage {
         revision: u64,
         actor: Actor,
     ) -> Result<()> {
+        self.library_resource_access_with_outfit_limits(
+            owner,
+            asset,
+            revision,
+            actor,
+            &crate::service::outfit_limits::OutfitLimits::default(),
+        )
+    }
+
+    pub fn library_resource_access_with_outfit_limits(
+        &self,
+        owner: Uuid,
+        asset: &str,
+        revision: u64,
+        actor: Actor,
+        limits: &crate::service::outfit_limits::OutfitLimits,
+    ) -> Result<()> {
         match self.avatar(owner, asset, revision) {
             Ok(avatar) => self.library_ensure_verified_blob(&avatar)?,
             Err(ErrorCode::NotFound) => {}
             Err(error) => return Err(error),
         }
-        self.library_read(|database| {
-            super::distribution::resource_access(database, owner, asset, revision, actor)
+        self.library_transaction(|database| {
+            super::distribution::resource_access_with_outfit_limits(
+                database, owner, asset, revision, actor, limits,
+            )
         })
     }
 }

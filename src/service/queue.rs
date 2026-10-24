@@ -55,7 +55,7 @@ fn cost(message: &SessionMessage) -> usize {
                 + 128
         }
         SessionMessage::Event(CloudEvent::FiguraPing { arguments, .. }) => arguments.len() + 128,
-        SessionMessage::Event(CloudEvent::AvatarChanged { .. }) => 4096,
+        SessionMessage::Event(CloudEvent::AvatarChanged { .. } | CloudEvent::OutfitStateChanged { .. }) => 4096,
         SessionMessage::Event(CloudEvent::LegacyRaw(bytes)) | SessionMessage::Ping(bytes) => {
             bytes.len() + 128
         }
