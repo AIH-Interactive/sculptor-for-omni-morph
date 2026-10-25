@@ -142,6 +142,16 @@ pub async fn publish(
         .get_by_uuid(&actor.uuid)
         .map(|user| user.nickname.clone())
         .ok_or(ErrorCode::Unauthenticated)?;
+    let has_local =
+        input.configuration.dependencies().iter().any(|reference| {
+            matches!(reference, crate::service::outfit::ResourceRef::Local { .. })
+        });
+    if has_local && !input.convert_local_dependencies {
+        return Err(LibraryError {
+            status: StatusCode::BAD_REQUEST,
+            code: "OUTFIT_DEPENDENCY_NOT_DISTRIBUTABLE",
+        });
+    }
     let config = state.config.read().await;
     let limits = config.outfit.limits.clone();
     let categories = config.model_library.effective_categories();
@@ -150,7 +160,17 @@ pub async fn publish(
     let result = blocking(move || {
         storage.library_publish_outfit(actor, &name, &origin, &input, &categories, &limits)
     })
-    .await?;
+    .await
+    .map_err(|error| {
+        if has_local && matches!(error.status, StatusCode::NOT_FOUND | StatusCode::FORBIDDEN) {
+            LibraryError {
+                status: StatusCode::BAD_REQUEST,
+                code: "OUTFIT_DEPENDENCY_NOT_DISTRIBUTABLE",
+            }
+        } else {
+            error
+        }
+    })?;
     json_response(result)
 }
 

@@ -7,6 +7,7 @@ pub(crate) use distribution::{can_observe_model, event_visible, record_identity}
 pub mod transfers;
 pub mod uploads;
 pub mod outfit_uploads;
+mod outfit_local_publication;
 pub mod collection;
 pub mod recycle;
 use super::library_policy::{Actor, Moderation, Policy, Visibility};

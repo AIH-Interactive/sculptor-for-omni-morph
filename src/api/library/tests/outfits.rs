@@ -1,6 +1,152 @@
 use super::*;
 
 #[tokio::test]
+async fn actual_java_local_outfit_publication_preserves_sources_and_distributes_assets() {
+    if std::env::var_os("OMNIMORPH_CLIENT_CLASSPATH_FILE").is_none() {
+        println!("SKIPPED Java local publication: set OMNIMORPH_CLIENT_CLASSPATH_FILE");
+        return;
+    }
+    let server = Server::start().await;
+    crate::api::protobuf::tests::java_client::execute(
+        &[
+            "top.aihmc.omnimorph.model.ysm.YsmMaterialNativeSmokeTest".into(),
+            "--local-outfit-publication".into(),
+            server.base.clone(),
+        ],
+        server._directory.path(),
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn local_outfit_publication_converts_bound_sources_only_with_explicit_consent() {
+    use crate::service::{outfit::*, outfit_limits::OutfitLimits};
+    let server = Server::start().await;
+    let native = outfit_resources::upload_private(&server, "local-publication").await;
+    let reference = ResourceRef::Local {
+        local_id: library::random_id().parse().unwrap(),
+        content_hash: "d".repeat(64),
+        format: "FIGURA".into(),
+    };
+    let binding = crate::storage::outfit_resources::LocalBinding {
+        reference: reference.clone(),
+        asset_id: native.asset_id.clone(),
+        asset_revision: native.revision,
+        raw_sha256: faster_hex::hex_string(&native.raw_sha256),
+        resource_kind: ResourceKind::Avatar,
+        accessory_metadata: None,
+    };
+    server
+        .state
+        .storage
+        .outfit_bind_local(Uuid::from_u128(1), &binding, &OutfitLimits::default())
+        .unwrap();
+    let mut configuration = OutfitConfig::default();
+    configuration.base = Some(reference.clone());
+    let mut input = json!({"operation_id": library::random_id(), "metadata": {
+        "resource_kind": "OUTFIT", "display_name": "Local preset", "internal_name": "Preset",
+        "authors": [], "category_id": "general", "description": "", "visibility": "PUBLIC",
+        "requires_authorization": false}, "configuration": configuration});
+    let send = |input: Value| {
+        server
+            .request(Method::POST, "/api/library/v1/uploads/outfit", 1)
+            .header("x-omnimorph-origin", &server.base)
+            .json(&input)
+            .send()
+    };
+    let rejected = send(input.clone()).await.unwrap();
+    assert_eq!(rejected.status(), 400);
+    assert_eq!(
+        rejected.json::<Value>().await.unwrap()["code"],
+        "OUTFIT_DEPENDENCY_NOT_DISTRIBUTABLE"
+    );
+    input["convert_local_dependencies"] = json!(true);
+    let response = send(input.clone()).await.unwrap();
+    assert_eq!(response.status(), 200, "{}", response.text().await.unwrap());
+    let result: Value = response.json().await.unwrap();
+    let repeated = send(input.clone())
+        .await
+        .unwrap()
+        .json::<Value>()
+        .await
+        .unwrap();
+    assert_eq!(result, repeated);
+    let published = server
+        .request(
+            Method::GET,
+            &format!(
+                "/api/library/v1/models/{}/outfit?revision=1",
+                result["model_id"].as_str().unwrap()
+            ),
+            2,
+        )
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(published.status(), 200);
+    let published = published.json::<Value>().await.unwrap();
+    assert_eq!(published["configuration"]["base"]["source"], "CLOUD");
+    assert_eq!(
+        server
+            .state
+            .storage
+            .outfit_resolve_local(
+                Uuid::from_u128(1),
+                &reference,
+                ResourceKind::Avatar,
+                &OutfitLimits::default()
+            )
+            .unwrap(),
+        Some(binding)
+    );
+    assert_eq!(
+        server
+            .state
+            .storage
+            .avatar(Uuid::from_u128(1), &native.asset_id, native.revision)
+            .unwrap(),
+        native
+    );
+    let before: i64 = server
+        .state
+        .storage
+        .library_read(|database| {
+            database
+                .query_row("SELECT count(*) FROM avatars", [], |row| row.get(0))
+                .map_err(library::sql_error)
+        })
+        .unwrap();
+    server.state.storage.library_read(|database| {
+        database.execute_batch("CREATE TEMP TRIGGER fail_outfit_publication BEFORE INSERT ON library_outfit_contents
+            BEGIN SELECT RAISE(ABORT, 'synthetic publication failure'); END;").unwrap();
+        Ok(())
+    }).unwrap();
+    input["operation_id"] = json!(library::random_id());
+    assert_eq!(send(input).await.unwrap().status(), 500);
+    server
+        .state
+        .storage
+        .library_read(|database| {
+            let models: i64 = database
+                .query_row("SELECT count(*) FROM library_models", [], |row| row.get(0))
+                .unwrap();
+            let assets: i64 = database
+                .query_row("SELECT count(*) FROM avatars", [], |row| row.get(0))
+                .unwrap();
+            assert_eq!(
+                models, 2,
+                "failed publication must not leave a half-published dependency"
+            );
+            assert_eq!(
+                assets, before,
+                "failed publication must roll back native catalog aliases"
+            );
+            Ok(())
+        })
+        .unwrap();
+}
+
+#[tokio::test]
 async fn outfit_recycle_preserves_json_restores_and_purges_content() {
     let server = Server::start().await;
     let configuration =

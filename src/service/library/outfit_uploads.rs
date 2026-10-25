@@ -55,6 +55,12 @@ pub struct OutfitUploadInput {
     pub operation_id: Uuid,
     pub metadata: OutfitMetadata,
     pub configuration: OutfitConfig,
+    #[serde(default, skip_serializing_if = "local_conversion_disabled")]
+    pub convert_local_dependencies: bool,
+}
+
+fn local_conversion_disabled(requested: &bool) -> bool {
+    !requested
 }
 
 fn dependency(
@@ -118,14 +124,56 @@ impl Storage {
             &serde_json::to_vec(&("publish-outfit", origin, input))
                 .map_err(|_| ErrorCode::Internal)?,
         );
-        self.library_transaction(|transaction| {
-            let bytes = library::operation(transaction, actor.uuid, input.operation_id, &fingerprint,
-                now_seconds(), |transaction| {
-                    if let Some(base) = &input.configuration.base {
+        // A lost publication reply must replay even if the original local source has since disappeared.
+        let replay = self.library_transaction(|transaction| {
+            library::operation(
+                transaction,
+                actor.uuid,
+                input.operation_id,
+                &fingerprint,
+                now_seconds(),
+                |_| Err(ErrorCode::NotFound),
+            )
+        });
+        match replay {
+            Ok(bytes) => return serde_json::from_slice(&bytes).map_err(|_| ErrorCode::Internal),
+            Err(ErrorCode::NotFound) => {}
+            Err(error) => return Err(error),
+        }
+        let local_sources =
+            super::outfit_local_publication::prepare(self, actor, input, categories, limits)?;
+        let assets: Vec<_> = local_sources
+            .iter()
+            .map(|source| source.descriptor.clone())
+            .collect();
+        let publish = |transaction: &Transaction<'_>| {
+            let bytes = library::operation(
+                transaction,
+                actor.uuid,
+                input.operation_id,
+                &fingerprint,
+                now_seconds(),
+                |transaction| {
+                    let configuration = super::outfit_local_publication::promote(
+                        transaction,
+                        actor,
+                        name,
+                        origin,
+                        &input.configuration,
+                        &local_sources,
+                        limits,
+                    )?;
+                    if let Some(base) = &configuration.base {
                         dependency(transaction, actor, origin, base, ResourceKind::Avatar)?;
                     }
-                    for instance in &input.configuration.instances {
-                        dependency(transaction, actor, origin, &instance.resource, ResourceKind::Accessory)?;
+                    for instance in &configuration.instances {
+                        dependency(
+                            transaction,
+                            actor,
+                            origin,
+                            &instance.resource,
+                            ResourceKind::Accessory,
+                        )?;
                     }
                     let count: i64 = transaction.query_row(
                         "SELECT count(*) FROM library_models WHERE uploader_uuid = ?1 AND moderation_status != 'DELETED'",
@@ -148,14 +196,29 @@ impl Storage {
                             serde_json::to_string(&metadata.authors).map_err(|_| ErrorCode::Internal)?,
                             metadata.category_id, metadata.description, visibility, metadata.requires_authorization, now],
                     ).map_err(sql_error)?;
-                    transaction.execute("INSERT INTO library_resource_kinds VALUES (?1, 'OUTFIT')", [&id]).map_err(sql_error)?;
-                    transaction.execute("INSERT INTO library_outfit_contents VALUES (?1, 1, ?2)",
-                        params![id, serde_json::to_string(&input.configuration).map_err(|_| ErrorCode::Internal)?],
-                    ).map_err(sql_error)?;
+                    transaction
+                        .execute(
+                            "INSERT INTO library_resource_kinds VALUES (?1, 'OUTFIT')",
+                            [&id],
+                        )
+                        .map_err(sql_error)?;
+                    transaction
+                        .execute(
+                            "INSERT INTO library_outfit_contents VALUES (?1, 1, ?2)",
+                            params![
+                                id,
+                                serde_json::to_string(&configuration)
+                                    .map_err(|_| ErrorCode::Internal)?
+                            ],
+                        )
+                        .map_err(sql_error)?;
                     for tag in &metadata.tags {
-                        transaction.execute("INSERT INTO library_tags VALUES (?1, ?2, ?3)",
-                            params![id, tag.to_lowercase(), tag],
-                        ).map_err(sql_error)?;
+                        transaction
+                            .execute(
+                                "INSERT INTO library_tags VALUES (?1, ?2, ?3)",
+                                params![id, tag.to_lowercase(), tag],
+                            )
+                            .map_err(sql_error)?;
                     }
                     ensure_uploader_grant(transaction, &id, actor.uuid)?;
                     transaction.execute(
@@ -165,9 +228,15 @@ impl Storage {
                     advance(transaction, &id)?;
                     serde_json::to_vec(&json!({"model_id": id, "published": true, "revision": 1, "policy_revision": 2}))
                         .map_err(|_| ErrorCode::Internal)
-                })?;
+                },
+            )?;
             serde_json::from_slice(&bytes).map_err(|_| ErrorCode::Internal)
-        })
+        };
+        if assets.is_empty() {
+            self.library_transaction(publish)
+        } else {
+            self.outfit_publish_library_assets(actor.uuid, &assets, publish)
+        }
     }
 
     pub fn library_read_outfit(&self, actor: Actor, id: &str, revision: u64) -> Result<Value> {

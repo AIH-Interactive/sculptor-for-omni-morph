@@ -8,6 +8,52 @@ use crate::service::{
 };
 use rusqlite::{Connection, OptionalExtension, Transaction, params};
 
+impl Storage {
+    /// Catalog aliases and their publication commit together; original private sources remain intact.
+    pub(crate) fn outfit_publish_library_assets<T>(
+        &self,
+        owner: Uuid,
+        assets: &[AvatarDescriptor],
+        publish: impl FnOnce(&Transaction<'_>) -> Result<T>,
+    ) -> Result<T> {
+        let mut result = None;
+        self.transaction_with_library(
+            |manifest| {
+                let account = manifest.owners.entry(owner).or_default();
+                for asset in assets {
+                    let encoded = asset.encode_to_vec();
+                    if let Some(history) = account.assets.get(&asset.asset_id) {
+                        let stored = history.get(&1).ok_or(ErrorCode::Conflict)?;
+                        if stored.tombstone || stored.descriptor != encoded {
+                            return Err(ErrorCode::Conflict);
+                        }
+                    } else {
+                        if account.assets.len() >= 1024 {
+                            return Err(ErrorCode::LimitExceeded);
+                        }
+                        account.assets.insert(
+                            asset.asset_id.clone(),
+                            BTreeMap::from([(
+                                1,
+                                StoredAvatar {
+                                    descriptor: encoded,
+                                    tombstone: false,
+                                },
+                            )]),
+                        );
+                    }
+                }
+                Ok(())
+            },
+            |transaction| {
+                result = Some(publish(transaction)?);
+                Ok(())
+            },
+        )?;
+        result.ok_or(ErrorCode::Internal)
+    }
+}
+
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct PrivateUpload {
