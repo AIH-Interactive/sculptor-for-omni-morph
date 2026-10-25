@@ -271,6 +271,11 @@ impl Storage {
         input: &LocalBinding,
         limits: &OutfitLimits,
     ) -> Result<LocalBinding> {
+        if input.resource_kind == ResourceKind::Accessory
+            && !crate::service::outfit::asset_distribution_enabled()
+        {
+            return Err(ErrorCode::UnsupportedCapability);
+        }
         input.validate(limits)?;
         let _publication = self.lock_blob_files()?;
         let avatar = self.avatar(owner, &input.asset_id, input.asset_revision)?;

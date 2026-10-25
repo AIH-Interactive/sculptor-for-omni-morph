@@ -12,6 +12,13 @@ pub const MAX_ANCHORS: usize = 128;
 pub const MAX_DEPTH: usize = 64;
 pub const MAX_JSON_BYTES: usize = 65536;
 
+/// Operational rollback switch. Existing owner sources and primary models remain available.
+pub fn asset_distribution_enabled() -> bool {
+    std::env::var("OUTFIT_ASSET_DISTRIBUTION")
+        .map(|value| value != "0" && !value.eq_ignore_ascii_case("false"))
+        .unwrap_or(true)
+}
+
 #[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum ResourceKind {
@@ -500,6 +507,7 @@ pub fn capabilities(limits: &OutfitLimits) -> serde_json::Value {
     let extension = serde_json::json!({
         "schema_version": 1, "configuration": true, "presets": true,
         "apply": true, "events": true, "publication": true, "standard_anchors": STANDARD_ANCHORS,
+        "asset_distribution": asset_distribution_enabled(),
         "limits": limits
     });
     value

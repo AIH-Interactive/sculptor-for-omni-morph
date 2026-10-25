@@ -51,6 +51,9 @@ pub(super) fn prepare(
         if !matches!(reference, ResourceRef::Local { .. }) {
             continue;
         }
+        if !crate::service::outfit::asset_distribution_enabled() {
+            return Err(ErrorCode::UnsupportedCapability);
+        }
         if !input.convert_local_dependencies {
             return Err(ErrorCode::InvalidMessage);
         }

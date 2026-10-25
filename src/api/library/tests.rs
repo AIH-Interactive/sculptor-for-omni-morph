@@ -35,6 +35,7 @@ mod outfit_uploads;
 mod outfit_observers;
 mod outfit_events;
 mod outfit_http_apply;
+mod outfit_distribution;
 
 static TEST_SERVERS: std::sync::LazyLock<Arc<tokio::sync::Semaphore>> =
     std::sync::LazyLock::new(|| Arc::new(tokio::sync::Semaphore::new(4)));

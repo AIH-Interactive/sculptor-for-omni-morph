@@ -133,6 +133,11 @@ impl PrivateUpload {
     }
 
     pub(crate) fn validate(&self, owner: Uuid, limits: &OutfitLimits) -> Result<()> {
+        if self.resource_kind == ResourceKind::Accessory
+            && !crate::service::outfit::asset_distribution_enabled()
+        {
+            return Err(ErrorCode::UnsupportedCapability);
+        }
         self.binding(owner)?.validate(limits)
     }
 }

@@ -124,6 +124,11 @@ impl Storage {
         input: &UploadInput,
         categories: &[String],
     ) -> Result<Reservation> {
+        if input.metadata.resource_kind == super::super::outfit::ResourceKind::Accessory
+            && !super::super::outfit::asset_distribution_enabled()
+        {
+            return Err(ErrorCode::UnsupportedCapability);
+        }
         input.metadata.validate(categories)?;
         text(name, 64, false)?;
         text(&input.source_filename, 128, false)?;

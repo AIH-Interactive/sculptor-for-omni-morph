@@ -141,6 +141,12 @@ impl Source {
         observer: Uuid,
         show_equipment: bool,
     ) -> Result<bool> {
+        if wearer != observer
+            && self.metadata.is_some()
+            && !crate::service::outfit::asset_distribution_enabled()
+        {
+            return Ok(false);
+        }
         if wearer != observer && !show_equipment {
             return Ok(false);
         }
