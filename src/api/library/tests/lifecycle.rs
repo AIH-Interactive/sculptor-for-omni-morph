@@ -1,5 +1,147 @@
 use super::*;
 
+#[tokio::test]
+async fn upload_requires_explicit_valid_visibility() {
+    let server = Server::start().await;
+    for visibility in [None, Some(json!("UNLISTED")), Some(Value::Null)] {
+        let mut input = upload_input(&figura_package(), "PUBLIC");
+        if let Some(value) = visibility {
+            input["metadata"]["visibility"] = value;
+        } else {
+            input["metadata"]
+                .as_object_mut()
+                .unwrap()
+                .remove("visibility");
+        }
+        let response = server
+            .request(Method::POST, "/api/library/v1/uploads", 1)
+            .json(&input)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), 400);
+        assert_eq!(
+            response.json::<Value>().await.unwrap()["code"],
+            "INVALID_VISIBILITY"
+        );
+    }
+}
+
+#[tokio::test]
+async fn upload_responses_report_persisted_publication_policy() {
+    let server = Server::start().await;
+    for visibility in ["PUBLIC", "PRIVATE"] {
+        let bytes = figura_package();
+        let input = upload_input(&bytes, visibility);
+        let response = server
+            .request(Method::POST, "/api/library/v1/uploads", 1)
+            .json(&input)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), 200);
+        let reservation = response.json::<Value>().await.unwrap();
+        assert_eq!(reservation["visibility"], visibility);
+        assert_eq!(reservation["published"], false);
+        assert_eq!(reservation["moderation_status"], "ACTIVE");
+        let response = server
+            .request(
+                Method::PUT,
+                reservation["relative_path"].as_str().unwrap(),
+                1,
+            )
+            .header("content-type", "application/octet-stream")
+            .body(bytes)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), 204);
+        let response = server
+            .request(
+                Method::POST,
+                &format!(
+                    "/api/library/v1/uploads/{}/commit",
+                    input["operation_id"].as_str().unwrap()
+                ),
+                1,
+            )
+            .json(&json!({"operation_id": library::random_id(), "expected_revision": 1}))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), 200);
+        let committed = response.json::<Value>().await.unwrap();
+        assert_eq!(committed["visibility"], visibility);
+        assert_eq!(committed["published"], true);
+        assert_eq!(committed["moderation_status"], "ACTIVE");
+    }
+}
+
+#[tokio::test]
+async fn upload_commit_reports_moderation_override_instead_of_draft_visibility() {
+    let server = Server::start().await;
+    let (original, bytes) = server.upload_model("PUBLIC").await;
+    let credentials = admin::issue(&server).await;
+    let response = server
+        .request(
+            Method::PUT,
+            &format!("/api/library/v1/admin/models/{original}/block"),
+            4,
+        )
+        .header("x-omnimorph-origin", &server.base)
+        .header(
+            "x-omnimorph-admin",
+            credentials["access_token"].as_str().unwrap(),
+        )
+        .json(&json!({"operation_id": library::random_id(), "expected_revision": 2}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 200);
+    let input = upload_input(&bytes, "PUBLIC");
+    let reservation = server
+        .request(Method::POST, "/api/library/v1/uploads", 1)
+        .json(&input)
+        .send()
+        .await
+        .unwrap()
+        .json::<Value>()
+        .await
+        .unwrap();
+    assert_eq!(reservation["visibility"], "PUBLIC");
+    let response = server
+        .request(
+            Method::PUT,
+            reservation["relative_path"].as_str().unwrap(),
+            1,
+        )
+        .header("content-type", "application/octet-stream")
+        .body(bytes)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 204);
+    let response = server
+        .request(
+            Method::POST,
+            &format!(
+                "/api/library/v1/uploads/{}/commit",
+                input["operation_id"].as_str().unwrap()
+            ),
+            1,
+        )
+        .json(&json!({"operation_id": library::random_id(), "expected_revision": 1}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 200);
+    let committed = response.json::<Value>().await.unwrap();
+    assert_eq!(committed["visibility"], "PRIVATE");
+    assert_eq!(committed["moderation_status"], "BLOCKED");
+    assert_eq!(committed["published"], true);
+    assert_eq!(committed["distribution_code"], "MODERATION_PRIVATE");
+}
+
 pub(super) async fn restart(server: &mut Server) {
     server.task.abort();
     tokio::time::timeout(std::time::Duration::from_secs(2), async {

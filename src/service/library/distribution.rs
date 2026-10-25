@@ -325,6 +325,10 @@ pub(super) fn resource_access_with_outfit_limits(
             |row| row.get(0),
         )
         .map_err(sql_error)?;
+    tracing::debug!(%owner, observer = %observer.uuid, asset_id = asset, revision,
+        visibility = ?item.policy.visibility, moderation = ?item.policy.moderation,
+        show_private_equipment = show_private, granted,
+        "Equipment observer policy");
     if item
         .policy
         .can_render_equipment(owner, observer.uuid, granted, show_private)

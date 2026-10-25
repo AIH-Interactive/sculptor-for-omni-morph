@@ -80,6 +80,43 @@ impl Reservation {
 }
 
 impl Storage {
+    /// Owner-only diagnostics include pending and moderated uploads.
+    pub fn library_upload_status(&self, actor: Actor, id: &str) -> Result<serde_json::Value> {
+        self.library_read(|database| {
+            let (visibility, published, moderation, policy_revision): (String, bool, String, i64) =
+                database
+                    .query_row(
+                        "SELECT visibility, published, moderation_status, policy_revision
+                     FROM library_effective_models WHERE model_id = ?1 AND uploader_uuid = ?2
+                     AND NOT EXISTS (SELECT 1 FROM library_recycle r
+                         WHERE r.model_id = ?1 AND r.purged = 1)",
+                        params![id, actor.uuid.to_string()],
+                        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+                    )
+                    .optional()
+                    .map_err(sql_error)?
+                    .ok_or(ErrorCode::NotFound)?;
+            let distribution_code = if moderation != "ACTIVE" {
+                Some("MODERATION_PRIVATE")
+            } else if !published {
+                Some("NOT_DISTRIBUTABLE")
+            } else {
+                None
+            };
+            tracing::info!(owner = %actor.uuid, model_id = id, %visibility, published,
+                moderation_status = %moderation, distribution_code,
+                "Library upload publication status");
+            Ok(json!({
+                "model_id": id,
+                "visibility": visibility,
+                "published": published,
+                "moderation_status": moderation,
+                "policy_revision": policy_revision,
+                "distribution_code": distribution_code,
+            }))
+        })
+    }
+
     pub fn library_reserve(
         &self,
         actor: Actor,

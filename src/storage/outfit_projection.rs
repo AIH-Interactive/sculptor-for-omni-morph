@@ -441,8 +441,15 @@ pub(super) fn project(
             require_verified,
         )?
         else {
+            tracing::debug!(%owner, %observer, instance = %instance.instance_id,
+                code = "NOT_DISTRIBUTABLE", "Outfit instance omitted by source policy");
             continue;
         };
+        tracing::debug!(%owner, %observer, instance = %instance.instance_id,
+            asset_id = %resolved.descriptor.asset_id, revision = resolved.descriptor.revision,
+            visibility = ?resolved.policy.map(|policy| policy.visibility),
+            moderation = ?resolved.policy.map(|policy| policy.moderation),
+            "Outfit instance asset projected");
         declarations.insert(
             instance.instance_id,
             resolved.metadata.clone().ok_or(ErrorCode::Internal)?,

@@ -14,10 +14,21 @@ use axum::{
 pub async fn reserve(
     State(state): State<AppState>,
     headers: HeaderMap,
-    body: std::result::Result<Json<UploadInput>, JsonRejection>,
+    body: std::result::Result<Json<Value>, JsonRejection>,
 ) -> Result<Response> {
     let actor = actor(&state, &headers).await?;
-    let input = parse_json(body)?;
+    let value = parse_json(body)?;
+    if !matches!(
+        value["metadata"]["visibility"].as_str(),
+        Some("PUBLIC" | "PRIVATE")
+    ) {
+        return Err(LibraryError {
+            status: StatusCode::BAD_REQUEST,
+            code: "INVALID_VISIBILITY",
+        });
+    }
+    let input: UploadInput =
+        serde_json::from_value(value).map_err(|_| ErrorCode::InvalidMessage)?;
     if let Some(metadata) = &input.metadata.accessory_metadata {
         metadata.validate_with_limits(&state.config.read().await.outfit.limits)?;
     }
@@ -35,26 +46,27 @@ pub async fn reserve(
         .map(|user| user.nickname.clone())
         .ok_or(ErrorCode::Unauthenticated)?;
     let storage = state.storage.clone();
-    let reservation =
-        blocking(move || storage.library_reserve(actor, &name, &input, &config.effective_categories())).await?;
+    let reservation = blocking(move || {
+        storage.library_reserve(actor, &name, &input, &config.effective_categories())
+    })
+    .await?;
     let storage = state.storage.clone();
     let operation = reservation.request.operation_id.clone();
-    let policy_revision = blocking(move || {
+    let mut status = blocking(move || {
         let pending = storage.library_upload_pending(actor, &operation)?;
-        storage.library_read(|database| {
-            crate::service::library::model(database, &pending.model_id, actor, true)
-                .map(|item| item.summary.policy_revision)
-        })
+        storage.library_upload_status(actor, &pending.model_id)
     })
     .await?;
     let descriptor = reservation.descriptor(actor.uuid)?;
     let grant = resource::grant_library_upload(&state, actor.uuid, &descriptor).await?;
-    json_response(
-        json!({"model_id": reservation.model_id, "operation_id": grant.operation_id,
-        "relative_path": format!("/api/library/v1/uploads/{}/body", grant.operation_id),
-        "expires_at": grant.expires_unix_seconds, "max_bytes": grant.max_bytes,
-        "policy_revision": policy_revision}),
-    )
+    status["operation_id"] = json!(grant.operation_id);
+    status["relative_path"] = json!(format!(
+        "/api/library/v1/uploads/{}/body",
+        grant.operation_id
+    ));
+    status["expires_at"] = json!(grant.expires_unix_seconds);
+    status["max_bytes"] = json!(grant.max_bytes);
+    json_response(status)
 }
 
 pub async fn upload(
@@ -126,7 +138,8 @@ pub async fn commit(
         },
     )
     .await?;
-    json_response(json!({"model_id": model_id, "published": true}))
+    let storage = state.storage.clone();
+    json_response(blocking(move || storage.library_upload_status(actor, &model_id)).await?)
 }
 
 pub async fn cancel(
