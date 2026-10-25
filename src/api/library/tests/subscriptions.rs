@@ -254,6 +254,48 @@ async fn authorized_observer_matrix_and_revocation_do_not_inherit_admin_rights()
 }
 
 #[tokio::test]
+async fn public_figura_change_and_body_are_observable_without_ysm_state() {
+    let server = Server::start().await;
+    let (model, bytes) = server.upload_model("PUBLIC").await;
+    let owner = Uuid::from_u128(1);
+    let mut viewer = Peer::connect(&server, 2).await;
+    viewer.subscribe(owner).await;
+    let response = server
+        .request(
+            Method::POST,
+            &format!("/api/library/v1/models/{model}/equip"),
+            1,
+        )
+        .json(
+            &json!({"operation_id": library::random_id(), "model_revision": 1,
+            "expected_equipment_revision": 0}),
+        )
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 200);
+    let Body::AvatarChanged(change) = viewer.next().await else {
+        panic!("Figura must announce its asset without a YSM snapshot");
+    };
+    let equipped = change.equipped.unwrap();
+    let figura = equipped.figura_compatibility.unwrap();
+    assert_eq!(figura.model_type, 1);
+    assert_eq!(figura.revision, 1);
+    assert_eq!(figura.raw_length, bytes.len() as u64);
+    assert_eq!(figura.raw_sha256, crate::storage::sha256(&bytes));
+    let response = server
+        .client
+        .get(format!("{}/api/{owner}/avatar", server.base))
+        .header("token", "synthetic-token-2")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 200);
+    assert_eq!(response.bytes().await.unwrap().as_ref(), bytes.as_slice());
+    viewer.socket.close(None).await.unwrap();
+}
+
+#[tokio::test]
 async fn existing_observers_receive_private_visibility_removal_and_opt_in_changes() {
     let server = Server::start().await;
     let (id, _) = server.upload_model("PUBLIC").await;

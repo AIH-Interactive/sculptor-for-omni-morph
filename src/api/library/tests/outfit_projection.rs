@@ -4,6 +4,66 @@ use crate::{
     storage::{outfit_apply::ApplyInput, outfit_projection::Snapshot},
 };
 
+#[tokio::test]
+async fn missing_local_figura_source_reports_not_distributable_without_exposing_reference() {
+    let server = Server::start().await;
+    let native = outfit_resources::upload_private(&server, "missing-local-figura").await;
+    let reference = ResourceRef::Local {
+        local_id: library::random_id().parse().unwrap(),
+        content_hash: "d".repeat(64),
+        format: "FIGURA".into(),
+    };
+    server
+        .state
+        .storage
+        .outfit_bind_local(
+            Uuid::from_u128(1),
+            &crate::storage::outfit_resources::LocalBinding {
+                reference: reference.clone(),
+                asset_id: native.asset_id,
+                asset_revision: native.revision,
+                raw_sha256: faster_hex::hex_string(&native.raw_sha256),
+                resource_kind: ResourceKind::Avatar,
+                accessory_metadata: None,
+            },
+            &OutfitLimits::default(),
+        )
+        .unwrap();
+    let mut configuration = OutfitConfig::default();
+    configuration.base = Some(reference);
+    configuration.show_equipment = true;
+    apply(&server, 1, configuration);
+    // Reproduce a persisted local selection whose uploaded source is no longer available.
+    server
+        .state
+        .storage
+        .library_transaction(|database| {
+            database
+                .execute(
+                    "DELETE FROM outfit_local_resources WHERE owner_uuid = ?1",
+                    [Uuid::from_u128(1).to_string()],
+                )
+                .unwrap();
+            Ok(())
+        })
+        .unwrap();
+    let response = server
+        .request(
+            Method::GET,
+            &format!("/api/library/v1/outfits/players/{}", Uuid::from_u128(1)),
+            2,
+        )
+        .header("x-omnimorph-origin", &server.base)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 200);
+    let snapshot = response.json::<Value>().await.unwrap();
+    assert_eq!(snapshot["distribution_code"], "NOT_DISTRIBUTABLE");
+    assert!(snapshot["configuration"].is_null());
+    assert_eq!(snapshot["resources"], json!([]));
+}
+
 fn apply(server: &Server, owner: u128, configuration: OutfitConfig) -> OutfitConfig {
     server
         .state

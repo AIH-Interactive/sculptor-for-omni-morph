@@ -34,6 +34,8 @@ pub(crate) struct Snapshot {
     pub equipment_revision: u64,
     pub configuration: Option<OutfitConfig>,
     pub resources: Vec<ProjectedResource>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub distribution_code: Option<&'static str>,
 }
 
 fn available(error: ErrorCode) -> Result<Option<outfit_sources::Source>> {
@@ -322,6 +324,7 @@ pub(super) fn project(
             .map_err(|_| ErrorCode::Internal)?,
         configuration: None,
         resources: Vec::new(),
+        distribution_code: None,
     };
     if (owner != observer && !configuration.show_equipment)
         || configuration.validate_with_limits(limits).is_err()
@@ -353,6 +356,9 @@ pub(super) fn project(
             require_verified,
         )?
         else {
+            if matches!(reference, ResourceRef::Local { .. }) {
+                snapshot.distribution_code = Some("NOT_DISTRIBUTABLE");
+            }
             return Ok(snapshot);
         };
         let (asset, revision) = match reference {
