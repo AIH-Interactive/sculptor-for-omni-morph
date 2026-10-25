@@ -57,9 +57,9 @@ CREATE TABLE library_images (
     image_revision INTEGER NOT NULL CHECK(image_revision > 0),
     hash TEXT NOT NULL CHECK(length(hash) = 64),
     media_type TEXT NOT NULL CHECK(media_type IN ('image/png','image/jpeg')),
-    width INTEGER NOT NULL CHECK(width BETWEEN 1 AND 2048),
-    height INTEGER NOT NULL CHECK(height BETWEEN 1 AND 2048),
-    byte_length INTEGER NOT NULL CHECK(byte_length BETWEEN 1 AND 2097152)
+    width INTEGER NOT NULL CHECK(width BETWEEN 1 AND 8192),
+    height INTEGER NOT NULL CHECK(height BETWEEN 1 AND 8192),
+    byte_length INTEGER NOT NULL CHECK(byte_length BETWEEN 1 AND 67108864)
 );
 CREATE TABLE library_favorites (
     player_uuid TEXT NOT NULL,

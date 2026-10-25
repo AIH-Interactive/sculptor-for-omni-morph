@@ -4,7 +4,7 @@ use rusqlite::{Connection, OptionalExtension, Transaction, params};
 use std::path::Path;
 use uuid::Uuid;
 
-pub(super) const SCHEMA_VERSION: u32 = 11;
+pub(super) const SCHEMA_VERSION: u32 = 12;
 
 pub(crate) fn sql_integer(value: u64) -> Result<i64> {
     i64::try_from(value).map_err(|_| ErrorCode::InvalidMessage)
@@ -134,6 +134,11 @@ fn migrate_transaction(database: &mut Connection, version: u32) -> Result<()> {
     if version < 11 {
         transaction
             .execute_batch(include_str!("outfit_uploads.sql"))
+            .map_err(sql_error)?;
+    }
+    if version < 12 {
+        transaction
+            .execute_batch(include_str!("library_images_configurable.sql"))
             .map_err(sql_error)?;
     }
     let violations: bool = transaction
