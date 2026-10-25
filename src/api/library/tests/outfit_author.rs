@@ -95,6 +95,7 @@ async fn native_java_accessory_declarations_are_rechecked_for_cloud_and_private_
         .unwrap();
     assert_eq!(bound.status(), 200, "{}", bound.text().await.unwrap());
     let mut configuration = OutfitConfig::default();
+    configuration.show_equipment = true;
     for resource in [cloud.clone(), local.clone()] {
         configuration
             .display_ordinals
@@ -208,6 +209,22 @@ async fn native_java_accessory_declarations_are_rechecked_for_cloud_and_private_
     assert_eq!(applied.configuration.revision, 1);
     assert_eq!(applied.configuration.instances.len(), 4);
     assert_eq!(applied.equipment_revision, 0);
+    if std::env::var_os("OMNIMORPH_CLIENT_CLASSPATH_FILE").is_some() {
+        let ResourceRef::Cloud { content_hash, .. } = &cloud else {
+            unreachable!();
+        };
+        crate::api::protobuf::tests::java_client::execute(
+            &[
+                "top.aihmc.omnimorph.backend2.library.OutfitObserverClientSmokeTest".into(),
+                "--rust".into(),
+                server.base.clone(),
+                Uuid::from_u128(1).to_string(),
+                content_hash.clone(),
+            ],
+            server._directory.path(),
+        )
+        .await;
+    }
     let parent = BoneRef {
         instance_id: Some(configuration.instances[0].instance_id),
         path: vec![BoneSegment {

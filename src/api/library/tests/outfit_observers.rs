@@ -30,6 +30,38 @@ fn apply(server: &Server, owner: u128, configuration: OutfitConfig) -> OutfitCon
         .configuration
 }
 
+#[tokio::test]
+async fn actual_java_observer_reads_rust_figura_snapshot_and_asset() {
+    if std::env::var_os("OMNIMORPH_CLIENT_CLASSPATH_FILE").is_none() {
+        println!("SKIPPED Java observer: set OMNIMORPH_CLIENT_CLASSPATH_FILE");
+        return;
+    }
+    let server = Server::start().await;
+    let (id, bytes) = server.upload_model("PUBLIC").await;
+    let hash = faster_hex::hex_string(&crate::storage::sha256(&bytes));
+    let mut configuration = OutfitConfig::default();
+    configuration.base = Some(ResourceRef::Cloud {
+        origin: server.base.clone(),
+        resource_id: id.parse().unwrap(),
+        revision: 1,
+        content_hash: hash.clone(),
+        format: "FIGURA".into(),
+    });
+    configuration.show_equipment = true;
+    apply(&server, 1, configuration);
+    crate::api::protobuf::tests::java_client::execute(
+        &[
+            "top.aihmc.omnimorph.backend2.library.OutfitObserverClientSmokeTest".into(),
+            "--rust".into(),
+            server.base.clone(),
+            Uuid::from_u128(1).to_string(),
+            hash,
+        ],
+        server._directory.path(),
+    )
+    .await;
+}
+
 async fn snapshot(server: &Server, owner: u128, viewer: u128) -> Value {
     let response = server
         .request(

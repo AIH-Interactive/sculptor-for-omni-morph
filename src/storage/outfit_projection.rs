@@ -449,6 +449,9 @@ pub(super) fn project(
         else {
             tracing::debug!(%owner, %observer, instance = %instance.instance_id,
                 code = "NOT_DISTRIBUTABLE", "Outfit instance omitted by source policy");
+            if matches!(instance.resource, ResourceRef::Local { .. }) {
+                snapshot.distribution_code = Some("NOT_DISTRIBUTABLE");
+            }
             continue;
         };
         tracing::debug!(%owner, %observer, instance = %instance.instance_id,
