@@ -352,7 +352,7 @@ pub fn router(state: AppState) -> Router<AppState> {
             get(images::image)
                 .put(images::put_image)
                 .delete(images::delete_image)
-                .layer(DefaultBodyLimit::max(2 * 1024 * 1024)),
+                .layer(DefaultBodyLimit::max(64 * 1024 * 1024)),
         )
         .route("/api/library/v1/capabilities", get(models::capabilities))
         .route("/api/library/v1/session", get(models::session))

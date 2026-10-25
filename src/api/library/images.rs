@@ -23,7 +23,9 @@ pub async fn put_image(
             ErrorCode::InvalidMessage.into()
         }
     })?;
-    if bytes.len() > 2 * 1024 * 1024 {
+    let image_config = state.config.read().await.model_library.clone();
+    let image_limits = crate::service::library::images::ImageLimits::from_config(&image_config);
+    if bytes.len() as u64 > image_limits.max_bytes {
         return Err(LibraryError::too_large());
     }
     let content_type = headers
@@ -56,10 +58,12 @@ pub async fn put_image(
     };
     let content_type = content_type.to_owned();
     let result = blocking(move || {
-        if crate::service::library::images::inspect(&bytes)?.0 != content_type {
+        if crate::service::library::images::inspect(&bytes, image_limits)?.0 != content_type {
             return Err(ErrorCode::InvalidMessage);
         }
-        state.storage.library_image_put(actor, &id, &input, &bytes)
+        state
+            .storage
+            .library_image_put(actor, &id, &input, &bytes, image_limits)
     })
     .await?;
     json_response(result)

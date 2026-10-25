@@ -9,8 +9,27 @@ pub struct ImageFile {
     pub length: u64,
 }
 
-pub fn inspect(bytes: &[u8]) -> Result<(&'static str, u32, u32)> {
-    if bytes.is_empty() || bytes.len() > 2 * 1024 * 1024 {
+#[derive(Clone, Copy, Debug)]
+pub struct ImageLimits {
+    pub max_bytes: u64,
+    pub max_width: u32,
+    pub max_height: u32,
+    pub max_alloc_bytes: u64,
+}
+
+impl ImageLimits {
+    pub fn from_config(config: &crate::service::library_admin::LibraryConfig) -> Self {
+        Self {
+            max_bytes: config.max_image_bytes,
+            max_width: config.max_image_width,
+            max_height: config.max_image_height,
+            max_alloc_bytes: config.max_image_alloc_bytes,
+        }
+    }
+}
+
+pub fn inspect(bytes: &[u8], policy: ImageLimits) -> Result<(&'static str, u32, u32)> {
+    if bytes.is_empty() || bytes.len() as u64 > policy.max_bytes {
         return Err(ErrorCode::LimitExceeded);
     }
     let mut reader = ImageReader::new(Cursor::new(bytes))
@@ -22,9 +41,9 @@ pub fn inspect(bytes: &[u8]) -> Result<(&'static str, u32, u32)> {
         _ => return Err(ErrorCode::UnsupportedCapability),
     };
     let mut limits = Limits::default();
-    limits.max_image_width = Some(2048);
-    limits.max_image_height = Some(2048);
-    limits.max_alloc = Some(32 * 1024 * 1024);
+    limits.max_image_width = Some(policy.max_width);
+    limits.max_image_height = Some(policy.max_height);
+    limits.max_alloc = Some(policy.max_alloc_bytes);
     reader.limits(limits);
     let decoded = reader.decode().map_err(|_| ErrorCode::InvalidMessage)?;
     if decoded.width() == 0 || decoded.height() == 0 {
@@ -40,8 +59,9 @@ impl Storage {
         id: &str,
         input: &Mutation,
         bytes: &[u8],
+        image_limits: ImageLimits,
     ) -> Result<Value> {
-        let (media_type, width, height) = inspect(bytes)?;
+        let (media_type, width, height) = inspect(bytes, image_limits)?;
         let hash = crate::storage::sha256(bytes);
         let hash_text = faster_hex::hex_string(&hash);
         let operation = super::super::resource::operation_id(&input.operation_id)?;

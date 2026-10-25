@@ -53,10 +53,76 @@ pub struct Limitations {
     pub can_upload: bool,
     #[serde(default = "default_package_nodes", deserialize_with = "package_nodes")]
     pub max_package_nodes: i64,
+    #[serde(default = "default_package_list_entries", deserialize_with = "package_list_entries")]
+    pub max_package_list_entries: i64,
+    #[serde(default = "default_package_depth", deserialize_with = "package_depth")]
+    pub max_package_depth: usize,
+    #[serde(default = "default_package_inspection_seconds", deserialize_with = "positive_u64")]
+    pub max_package_inspection_seconds: u64,
+    #[serde(default = "default_package_decompressed_bytes", deserialize_with = "positive_u64")]
+    pub max_package_decompressed_bytes: u64,
+    #[serde(default = "default_package_resource_bytes", deserialize_with = "positive_u64")]
+    pub max_package_resource_bytes: u64,
+    #[serde(default = "default_package_ciphertext_bytes", deserialize_with = "positive_u64")]
+    pub max_package_ciphertext_bytes: u64,
 }
 
 fn default_package_nodes() -> i64 {
     262_144
+}
+
+fn default_package_list_entries() -> i64 {
+    crate::service::package::MAX_LIST_ENTRIES as i64
+}
+
+fn default_package_depth() -> usize {
+    crate::service::package::MAX_DEPTH
+}
+
+fn default_package_inspection_seconds() -> u64 {
+    crate::service::package::INSPECTION_TIMEOUT.as_secs()
+}
+
+fn default_package_decompressed_bytes() -> u64 {
+    crate::service::package::MAX_DECOMPRESSED
+}
+
+fn default_package_resource_bytes() -> u64 {
+    crate::service::package::MAX_RESOURCE
+}
+
+fn default_package_ciphertext_bytes() -> u64 {
+    crate::service::package::MAX_CIPHERTEXT
+}
+
+fn package_list_entries<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<i64, D::Error> {
+    let value = i64::deserialize(deserializer)?;
+    if value < -1 {
+        return Err(serde::de::Error::custom(
+            "maxPackageListEntries must be -1 or nonnegative",
+        ));
+    }
+    Ok(value)
+}
+
+fn package_depth<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<usize, D::Error> {
+    let value = usize::deserialize(deserializer)?;
+    if value == 0 {
+        return Err(serde::de::Error::custom(
+            "maxPackageDepth must be positive",
+        ));
+    }
+    Ok(value)
+}
+
+fn positive_u64<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<u64, D::Error> {
+    let value = u64::deserialize(deserializer)?;
+    if value == 0 {
+        return Err(serde::de::Error::custom(
+            "package byte and time limits must be positive",
+        ));
+    }
+    Ok(value)
 }
 
 fn package_nodes<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<i64, D::Error> {
@@ -179,12 +245,65 @@ mod tests {
         let base = "maxAvatarSize = 102400\nmaxAvatars = 100\ncanUpload = true\n";
         let defaults: Limitations = toml::from_str(base).unwrap();
         assert_eq!(defaults.max_package_nodes, 262_144);
+        assert_eq!(
+            defaults.max_package_list_entries,
+            crate::service::package::MAX_LIST_ENTRIES as i64
+        );
+        assert_eq!(
+            defaults.max_package_depth,
+            crate::service::package::MAX_DEPTH
+        );
+        assert_eq!(
+            defaults.max_package_inspection_seconds,
+            crate::service::package::INSPECTION_TIMEOUT.as_secs()
+        );
+        assert_eq!(
+            defaults.max_package_decompressed_bytes,
+            crate::service::package::MAX_DECOMPRESSED
+        );
+        assert_eq!(
+            defaults.max_package_resource_bytes,
+            crate::service::package::MAX_RESOURCE
+        );
+        assert_eq!(
+            defaults.max_package_ciphertext_bytes,
+            crate::service::package::MAX_CIPHERTEXT
+        );
         for value in [-1, 0, 500_000] {
             let settings: Limitations =
                 toml::from_str(&format!("{base}maxPackageNodes = {value}\n")).unwrap();
             assert_eq!(settings.max_package_nodes, value);
         }
         assert!(toml::from_str::<Limitations>(&format!("{base}maxPackageNodes = -2\n")).is_err());
+    }
+
+    #[test]
+    fn package_inspection_limits_are_configurable() {
+        let base = "maxAvatarSize = 102400\nmaxAvatars = 100\ncanUpload = true\n";
+        let settings: Limitations = toml::from_str(&format!(
+            "{base}maxPackageListEntries = 12000\nmaxPackageDepth = 96\n\
+             maxPackageInspectionSeconds = 25\nmaxPackageDecompressedBytes = 1234\n\
+             maxPackageResourceBytes = 4567\nmaxPackageCiphertextBytes = 7890\n"
+        ))
+        .unwrap();
+        assert_eq!(settings.max_package_list_entries, 12_000);
+        assert_eq!(settings.max_package_depth, 96);
+        assert_eq!(settings.max_package_inspection_seconds, 25);
+        assert_eq!(settings.max_package_decompressed_bytes, 1234);
+        assert_eq!(settings.max_package_resource_bytes, 4567);
+        assert_eq!(settings.max_package_ciphertext_bytes, 7890);
+        assert!(toml::from_str::<Limitations>(&format!(
+            "{base}maxPackageListEntries = -2\n"
+        ))
+        .is_err());
+        assert!(toml::from_str::<Limitations>(&format!(
+            "{base}maxPackageDepth = 0\n"
+        ))
+        .is_err());
+        assert!(toml::from_str::<Limitations>(&format!(
+            "{base}maxPackageInspectionSeconds = 0\n"
+        ))
+        .is_err());
     }
 
     #[test]

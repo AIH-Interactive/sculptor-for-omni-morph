@@ -74,6 +74,12 @@ customText = """
 ## Full update of these parameters occurs only after restarting the Sculptor!!!
 [limitations]
 maxPackageNodes = 262144 # NBT nodes checked on upload; -1 disables the node-count limit
+maxPackageListEntries = 65536 # Max items in one NBT list; -1 disables the per-list cap (high-poly meshes need this)
+maxPackageDepth = 64 # Max NBT nesting depth
+maxPackageInspectionSeconds = 10 # Max time spent inspecting one package
+maxPackageDecompressedBytes = 268435456 # Max decompressed NBT bytes (256 MiB)
+maxPackageResourceBytes = 33554432 # Max single embedded resource/byte array (32 MiB)
+maxPackageCiphertextBytes = 67108864 # Max YSM ciphertext byte array (64 MiB)
 maxAvatarSize = 100 # KB
 maxAvatars = 10 # It doesn't look like Figura has any actions implemented with this?
 # P.S. And it doesn't look like the current API allows anything like that...
@@ -96,6 +102,10 @@ pride = [0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0] # 25
 ## Model library administrators are configured here, never in a game account GUI.
 [model_library]
 max_upload_bytes = 67108864 # 64 MiB, independent of the wardrobe limit
+max_image_bytes = 2097152 # 2 MiB per cover image
+max_image_width = 2048 # Maximum decoded cover width
+max_image_height = 2048 # Maximum decoded cover height
+max_image_alloc_bytes = 33554432 # Decoder allocation budget (32 MiB)
 preview_cache_seconds = 3600 # Preview cache lifetime in seconds; clients still revalidate access
 # Built in: full_model (complete models), decorative_parts (decorative parts).
 # This list adds extra categories; it cannot remove or replace the built-ins.

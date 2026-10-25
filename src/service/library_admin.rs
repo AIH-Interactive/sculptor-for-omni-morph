@@ -27,6 +27,10 @@ pub struct LibraryConfig {
     pub max_upload_bytes: u64,
     pub preview_cache_seconds: u32,
     pub categories: Vec<String>,
+    pub max_image_bytes: u64,
+    pub max_image_width: u32,
+    pub max_image_height: u32,
+    pub max_image_alloc_bytes: u64,
 }
 
 impl Default for LibraryConfig {
@@ -36,6 +40,10 @@ impl Default for LibraryConfig {
             max_upload_bytes: 64 * 1024 * 1024,
             preview_cache_seconds: 3600,
             categories: Vec::new(),
+            max_image_bytes: 2 * 1024 * 1024,
+            max_image_width: 2048,
+            max_image_height: 2048,
+            max_image_alloc_bytes: 32 * 1024 * 1024,
         }
     }
 }
@@ -58,6 +66,14 @@ struct RawLibraryConfig {
     preview_cache_seconds: Option<u32>,
     #[serde(default)]
     categories: Option<Vec<String>>,
+    #[serde(default)]
+    max_image_bytes: Option<u64>,
+    #[serde(default)]
+    max_image_width: Option<u32>,
+    #[serde(default)]
+    max_image_height: Option<u32>,
+    #[serde(default)]
+    max_image_alloc_bytes: Option<u64>,
 }
 
 impl TryFrom<RawLibraryConfig> for LibraryConfig {
@@ -88,10 +104,22 @@ impl TryFrom<RawLibraryConfig> for LibraryConfig {
                 .map_err(|_| "invalid model library administrator password hash")?;
         }
         let max_upload_bytes = raw.max_upload_bytes.unwrap_or(64 * 1024 * 1024);
+        let max_image_bytes = raw.max_image_bytes.unwrap_or(2 * 1024 * 1024);
+        let max_image_width = raw.max_image_width.unwrap_or(2048);
+        let max_image_height = raw.max_image_height.unwrap_or(2048);
+        let max_image_alloc_bytes = raw.max_image_alloc_bytes.unwrap_or(32 * 1024 * 1024);
         let categories = raw.categories.unwrap_or_default();
         let mut unique_categories = HashSet::new();
         if max_upload_bytes == 0
             || max_upload_bytes > 1024 * 1024 * 1024
+            || max_image_bytes == 0
+            || max_image_bytes > 64 * 1024 * 1024
+            || max_image_width == 0
+            || max_image_width > 8192
+            || max_image_height == 0
+            || max_image_height > 8192
+            || max_image_alloc_bytes == 0
+            || max_image_alloc_bytes > 256 * 1024 * 1024
             || categories.len() > 30
             || categories.iter().any(|category| {
                 category.is_empty()
@@ -112,6 +140,10 @@ impl TryFrom<RawLibraryConfig> for LibraryConfig {
             max_upload_bytes,
             preview_cache_seconds: raw.preview_cache_seconds.unwrap_or(3600),
             categories,
+            max_image_bytes,
+            max_image_width,
+            max_image_height,
+            max_image_alloc_bytes,
         })
     }
 }

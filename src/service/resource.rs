@@ -478,9 +478,11 @@ async fn commit_upload_inner(
         state.storage.blob_path(&descriptor.raw_sha256)?
     };
     let inspection_path = source.clone();
-    let max_nodes = state.config.read().await.limitations.max_package_nodes;
+    let limits = super::package::PackageLimits::from_limitations(
+        &state.config.read().await.limitations,
+    );
     let inspected = tokio::task::spawn_blocking(move || {
-        super::package::inspect_upload(&inspection_path, max_nodes)
+        super::package::inspect_upload(&inspection_path, limits)
     })
     .await
     .map_err(|_| ErrorCode::Internal)?
@@ -628,9 +630,11 @@ async fn import_legacy_if_needed(
     }
     let legacy_hash = legacy_file_hash(&snapshot.0).await?;
     let inspection_path = snapshot.0.clone();
-    let max_nodes = state.config.read().await.limitations.max_package_nodes;
+    let limits = super::package::PackageLimits::from_limitations(
+        &state.config.read().await.limitations,
+    );
     let identity = tokio::task::spawn_blocking(move || {
-        super::package::inspect_upload(&inspection_path, max_nodes)
+        super::package::inspect_upload(&inspection_path, limits)
     })
     .await
     .map_err(|_| ErrorCode::Internal)??;
@@ -733,7 +737,7 @@ pub async fn upload_legacy(state: &AppState, token: &str, body: axum::body::Body
     let config = state.config.read().await;
     let allowed = config.limitations.can_upload;
     let limit = config.limitations.max_avatar_size.saturating_mul(1000);
-    let max_nodes = config.limitations.max_package_nodes;
+    let limits = super::package::PackageLimits::from_limitations(&config.limitations);
     drop(config);
     if !state.user_manager.upload_state(user.uuid, allowed) {
         return Err(ApiError::Forbidden);
@@ -772,7 +776,7 @@ pub async fn upload_legacy(state: &AppState, token: &str, body: axum::body::Body
         drop(file);
         let path = staging.0.clone();
         let inspected =
-            tokio::task::spawn_blocking(move || super::package::inspect_upload(&path, max_nodes))
+            tokio::task::spawn_blocking(move || super::package::inspect_upload(&path, limits))
                 .await
                 .map_err(internal_and_log)?
                 .map_err(legacy_error)?;
@@ -835,9 +839,11 @@ pub async fn write_legacy(
         .await
         .map_err(internal_and_log)?;
     let inspection = staging.0.clone();
-    let max_nodes = state.config.read().await.limitations.max_package_nodes;
+    let limits = super::package::PackageLimits::from_limitations(
+        &state.config.read().await.limitations,
+    );
     let inspected =
-        tokio::task::spawn_blocking(move || super::package::inspect_upload(&inspection, max_nodes))
+        tokio::task::spawn_blocking(move || super::package::inspect_upload(&inspection, limits))
             .await
             .map_err(|_| ApiError::Internal)?
             .map_err(legacy_error)?;

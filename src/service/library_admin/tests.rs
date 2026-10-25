@@ -11,6 +11,36 @@ fn preview_cache_duration_defaults_and_explicit_values_are_preserved() {
     assert!(toml::from_str::<LibraryConfig>("preview_cache_seconds = -1").is_err());
 }
 
+#[test]
+fn image_limits_are_configurable_and_bounded() {
+    let defaults: LibraryConfig = toml::from_str("").unwrap();
+    assert_eq!(defaults.max_image_bytes, 2 * 1024 * 1024);
+    assert_eq!(defaults.max_image_width, 2048);
+    assert_eq!(defaults.max_image_height, 2048);
+    assert_eq!(defaults.max_image_alloc_bytes, 32 * 1024 * 1024);
+    let custom: LibraryConfig = toml::from_str(
+        "max_image_bytes = 8192\nmax_image_width = 512\n\
+         max_image_height = 256\nmax_image_alloc_bytes = 65536\n",
+    )
+    .unwrap();
+    assert_eq!(custom.max_image_bytes, 8192);
+    assert_eq!(custom.max_image_width, 512);
+    assert_eq!(custom.max_image_height, 256);
+    assert_eq!(custom.max_image_alloc_bytes, 65536);
+    for invalid in [
+        "max_image_bytes = 0",
+        "max_image_bytes = 67108865",
+        "max_image_width = 0",
+        "max_image_width = 8193",
+        "max_image_height = 0",
+        "max_image_height = 8193",
+        "max_image_alloc_bytes = 0",
+        "max_image_alloc_bytes = 268435457",
+    ] {
+        assert!(toml::from_str::<LibraryConfig>(invalid).is_err(), "{invalid}");
+    }
+}
+
 // Synthetic test-only password/salt; independently derived with Python hashlib.
 const KEY: &str = "055bcd61a2939b3846e10d4f9ebdf02be6610f5f894fd7882e985b9f87b81cff";
 

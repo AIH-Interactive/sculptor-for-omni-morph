@@ -10,11 +10,78 @@ use std::{
     time::{Duration, Instant},
 };
 
-const MAX_DECOMPRESSED: u64 = 256 * 1024 * 1024;
-const MAX_RESOURCE: u64 = 32 * 1024 * 1024;
-const MAX_CIPHERTEXT: u64 = 64 * 1024 * 1024;
+pub const MAX_DECOMPRESSED: u64 = 256 * 1024 * 1024;
+pub const MAX_RESOURCE: u64 = 32 * 1024 * 1024;
+pub const MAX_CIPHERTEXT: u64 = 64 * 1024 * 1024;
+pub const MAX_LIST_ENTRIES: u64 = 65_536;
+pub const MAX_DEPTH: usize = 64;
+pub const INSPECTION_TIMEOUT: Duration = Duration::from_secs(10);
 
 type Result<T> = std::result::Result<T, ErrorCode>;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PackageLimits {
+    pub max_nodes: Option<u64>,
+    pub max_list_entries: Option<u64>,
+    pub max_depth: usize,
+    pub inspection_timeout: Duration,
+    pub max_decompressed: u64,
+    pub max_resource: u64,
+    pub max_ciphertext: u64,
+}
+
+impl PackageLimits {
+    pub fn from_limitations(limitations: &crate::state::Limitations) -> Self {
+        Self {
+            max_nodes: optional_limit(limitations.max_package_nodes),
+            max_list_entries: optional_limit(limitations.max_package_list_entries),
+            max_depth: limitations.max_package_depth,
+            inspection_timeout: Duration::from_secs(
+                limitations.max_package_inspection_seconds,
+            ),
+            max_decompressed: limitations.max_package_decompressed_bytes,
+            max_resource: limitations.max_package_resource_bytes,
+            max_ciphertext: limitations.max_package_ciphertext_bytes,
+        }
+    }
+
+    /// Trusted reads only enforce transport-like safety budgets. Upload policy
+    /// (node/list/depth quotas) must never make an already accepted blob unreadable.
+    pub fn trusted() -> Self {
+        Self {
+            max_nodes: None,
+            max_list_entries: None,
+            max_depth: 4096,
+            inspection_timeout: Duration::from_secs(30),
+            max_decompressed: MAX_DECOMPRESSED,
+            max_resource: MAX_RESOURCE,
+            max_ciphertext: MAX_CIPHERTEXT,
+        }
+    }
+}
+
+impl Default for PackageLimits {
+    fn default() -> Self {
+        Self {
+            max_nodes: Some(262_144),
+            max_list_entries: Some(MAX_LIST_ENTRIES),
+            max_depth: MAX_DEPTH,
+            inspection_timeout: INSPECTION_TIMEOUT,
+            max_decompressed: MAX_DECOMPRESSED,
+            max_resource: MAX_RESOURCE,
+            max_ciphertext: MAX_CIPHERTEXT,
+        }
+    }
+}
+
+fn optional_limit(value: i64) -> Option<u64> {
+    match value {
+        -1 => None,
+        value if value >= 0 => Some(value as u64),
+        _ => None,
+    }
+}
+
 
 /// Java DataOutputStream writes UTF-16 code units using modified UTF-8, including
 /// surrogate pairs. Decode metadata exactly rather than replacing non-BMP names.
@@ -121,15 +188,76 @@ pub(crate) mod tests {
     fn large_model_is_not_rejected_by_a_read_time_node_quota() {
         let (bytes, _) = large_node_fixture();
         assert!(inspect_with_budget(bytes.as_slice(), MAX_DECOMPRESSED).is_ok());
-        assert!(inspect_with_limits(bytes.as_slice(), MAX_DECOMPRESSED, None).is_ok());
+        assert!(inspect_with_limits(bytes.as_slice(), PackageLimits::trusted()).is_ok());
         assert!(matches!(
-            inspect_with_limits(bytes.as_slice(), MAX_DECOMPRESSED, Some(262_144)),
+            inspect_with_limits(
+                bytes.as_slice(),
+                PackageLimits {
+                    max_nodes: Some(262_144),
+                    ..PackageLimits::default()
+                }
+            ),
             Err(ErrorCode::LimitExceeded)
         ));
         assert!(matches!(
-            inspect_with_limits(bytes.as_slice(), 8, None),
+            inspect_with_limits(
+                bytes.as_slice(),
+                PackageLimits {
+                    max_decompressed: 8,
+                    ..PackageLimits::default()
+                }
+            ),
             Err(ErrorCode::LimitExceeded)
         ));
+    }
+
+    #[test]
+    fn oversized_list_limit_is_configurable() {
+        let bytes = oversized_list_fixture(8_192);
+        assert!(matches!(
+            inspect_with_limits(
+                bytes.as_slice(),
+                PackageLimits {
+                    max_list_entries: Some(4_096),
+                    ..PackageLimits::default()
+                }
+            ),
+            Err(ErrorCode::LimitExceeded)
+        ));
+        assert!(inspect_with_limits(
+            bytes.as_slice(),
+            PackageLimits {
+                max_list_entries: Some(8_192),
+                ..PackageLimits::default()
+            }
+        )
+        .is_ok());
+        assert!(inspect_with_limits(
+            bytes.as_slice(),
+            PackageLimits {
+                max_list_entries: None,
+                ..PackageLimits::default()
+            }
+        )
+        .is_ok());
+    }
+
+    fn oversized_list_fixture(length: i32) -> Vec<u8> {
+        let (bytes, _) = fixture(false, false);
+        let mut nbt = Vec::new();
+        GzDecoder::new(bytes.as_slice())
+            .read_to_end(&mut nbt)
+            .unwrap();
+        nbt.pop();
+        nbt.push(9);
+        text(&mut nbt, "vertices");
+        nbt.push(1);
+        nbt.extend_from_slice(&length.to_be_bytes());
+        nbt.extend(vec![0u8; length as usize]);
+        nbt.push(0);
+        let mut encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+        encoder.write_all(&nbt).unwrap();
+        encoder.finish().unwrap()
     }
 
     pub(crate) fn large_node_fixture() -> (Vec<u8>, Vec<u8>) {
@@ -225,6 +353,11 @@ struct Scanner<R> {
     started: Instant,
     nodes: usize,
     max_nodes: Option<u64>,
+    max_list_entries: Option<u64>,
+    max_depth: usize,
+    inspection_timeout: Duration,
+    max_resource: u64,
+    max_ciphertext: u64,
     format: String,
     content_hash: Option<Vec<u8>>,
     ciphertext_hash: Option<Vec<u8>>,
@@ -239,42 +372,45 @@ struct Scanner<R> {
 }
 
 pub fn inspect(path: &Path) -> Result<PackageIdentity> {
-    inspect_with_budget(
-        File::open(path).map_err(|_| ErrorCode::Internal)?,
-        MAX_DECOMPRESSED,
-    )
-}
-
-/// Node quotas apply when admitting uploads. Reading accepted blobs must not
-/// silently impose the former fixed quota after an administrator disables it.
-pub fn inspect_upload(path: &Path, max_nodes: i64) -> Result<PackageIdentity> {
-    let max_nodes = match max_nodes {
-        -1 => None,
-        value if value >= 0 => Some(value as u64),
-        _ => return Err(ErrorCode::InvalidMessage),
-    };
     inspect_with_limits(
         File::open(path).map_err(|_| ErrorCode::Internal)?,
-        MAX_DECOMPRESSED,
-        max_nodes,
+        PackageLimits::trusted(),
     )
 }
 
-fn inspect_with_budget(source: impl Read, budget: u64) -> Result<PackageIdentity> {
-    inspect_with_limits(source, budget, None)
+/// Upload quotas come from the live configuration. Accepted blobs are read with
+/// the more permissive `trusted` limits so a policy change cannot hide old data.
+pub fn inspect_upload(path: &Path, limits: PackageLimits) -> Result<PackageIdentity> {
+    inspect_with_limits(
+        File::open(path).map_err(|_| ErrorCode::Internal)?,
+        limits,
+    )
 }
 
-fn inspect_with_limits(
-    source: impl Read,
-    budget: u64,
-    max_nodes: Option<u64>,
-) -> Result<PackageIdentity> {
+#[cfg(test)]
+fn inspect_with_budget(source: impl Read, budget: u64) -> Result<PackageIdentity> {
+    inspect_with_limits(
+        source,
+        PackageLimits {
+            max_nodes: None,
+            max_decompressed: budget,
+            ..PackageLimits::default()
+        },
+    )
+}
+
+fn inspect_with_limits(source: impl Read, limits: PackageLimits) -> Result<PackageIdentity> {
     let mut scanner = Scanner {
         source: GzDecoder::new(source),
-        remaining: budget,
+        remaining: limits.max_decompressed,
         started: Instant::now(),
         nodes: 0,
-        max_nodes,
+        max_nodes: limits.max_nodes,
+        max_list_entries: limits.max_list_entries,
+        max_depth: limits.max_depth,
+        inspection_timeout: limits.inspection_timeout,
+        max_resource: limits.max_resource,
+        max_ciphertext: limits.max_ciphertext,
         format: String::new(),
         content_hash: None,
         ciphertext_hash: None,
@@ -360,7 +496,7 @@ impl<R: Read> Scanner<R> {
         if bytes.len() as u64 > self.remaining {
             return Err(self.limit("decompressed_bytes"));
         }
-        if self.started.elapsed() > Duration::from_secs(10) {
+        if self.started.elapsed() > self.inspection_timeout {
             return Err(self.limit("inspection_time"));
         }
         self.remaining -= bytes.len() as u64;
@@ -420,7 +556,7 @@ impl<R: Read> Scanner<R> {
 
     fn value(&mut self, kind: u8, path: &str, depth: usize) -> Result<()> {
         self.nodes += 1;
-        if depth > 64 {
+        if depth > self.max_depth {
             return Err(self.limit("nesting_depth"));
         }
         if self
@@ -462,9 +598,9 @@ impl<R: Read> Scanner<R> {
                 let ciphertext = path == "ysm/source_ciphertext";
                 if length
                     > if ciphertext {
-                        MAX_CIPHERTEXT
+                        self.max_ciphertext
                     } else {
-                        MAX_RESOURCE
+                        self.max_resource
                     }
                 {
                     return Err(self.limit("resource_bytes"));
@@ -507,7 +643,11 @@ impl<R: Read> Scanner<R> {
             9 => {
                 let element = self.byte()?;
                 let length = self.length()?;
-                if length > 4096 || (length > 0 && element == 0) {
+                if self
+                    .max_list_entries
+                    .is_some_and(|limit| length > limit)
+                    || (length > 0 && element == 0)
+                {
                     return Err(self.limit("list_entries"));
                 }
                 for _ in 0..length {

@@ -65,6 +65,13 @@ async fn retryable_inspection_limit_does_not_turn_commit_retry_into_not_found() 
     use crate::protocol::v1::{AvatarDescriptor, CommitUpload, ErrorCode, UploadRequest};
 
     let server = Server::start().await;
+    server
+        .state
+        .config
+        .write()
+        .await
+        .limitations
+        .max_package_list_entries = 4_096;
     let owner = Uuid::from_u128(1);
     let (bytes, _) = crate::service::package::tests::fixture(false, false);
     let mut nbt = Vec::new();
