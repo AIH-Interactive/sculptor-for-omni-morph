@@ -371,3 +371,45 @@ fn validation_and_tail_eviction_preserve_the_committed_baseline() {
         Err(ErrorCode::SnapshotRequired)
     ));
 }
+
+/// D025/S4: display values are range-checked like the client and merged like other partitions.
+#[test]
+fn display_state_is_validated_and_merged() {
+    let display = |food: Option<u32>| YsmDisplay {
+        food_level: food,
+        experience_level: Some(30),
+        flying: Some(true),
+        strafe_input: Some(-1.0),
+        vertical_input: Some(0.0),
+        forward_input: Some(1.0),
+        has_effects: true,
+        effects: vec![YsmDisplayEffect {
+            id: "minecraft:speed".into(),
+            level: 2,
+        }],
+    };
+    let state = |display: Option<YsmDisplay>| YsmState {
+        display,
+        ..Default::default()
+    };
+    assert!(validate_state(&state(Some(display(Some(20)))), false).is_ok());
+    assert!(validate_state(&state(Some(display(Some(21)))), false).is_err());
+    let mut bad_input = display(None);
+    bad_input.strafe_input = Some(f32::NAN);
+    assert!(validate_state(&state(Some(bad_input)), false).is_err());
+    let mut bad_effect = display(None);
+    bad_effect.effects[0].id = "Bad Id".into();
+    assert!(validate_state(&state(Some(bad_effect)), false).is_err());
+    let mut unknown_effects = display(None);
+    unknown_effects.has_effects = false;
+    assert!(validate_state(&state(Some(unknown_effects)), false).is_err());
+    let mut duplicate = display(None);
+    duplicate.effects.push(duplicate.effects[0].clone());
+    assert!(validate_state(&state(Some(duplicate)), false).is_err());
+
+    let mut target = state(Some(display(Some(5))));
+    merge(&mut target, &state(None));
+    assert_eq!(target.display.as_ref().unwrap().food_level, Some(5), "absent display keeps the old value");
+    merge(&mut target, &state(Some(display(Some(9)))));
+    assert_eq!(target.display.as_ref().unwrap().food_level, Some(9), "a display delta replaces it");
+}

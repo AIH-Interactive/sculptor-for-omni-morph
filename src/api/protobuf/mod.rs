@@ -131,6 +131,7 @@ pub async fn hello_ack(state: &AppState) -> HelloAck {
             Capability::YsmPlain as i32,
             Capability::YsmEncrypted as i32,
             Capability::YsmRecovery as i32,
+            Capability::YsmDisplay as i32,
         ],
         limits: Some(limits(state).await),
         heartbeat_seconds: 20,

@@ -253,8 +253,40 @@ pub fn validate_state(state: &YsmState, complete: bool) -> Result<()> {
             return Err(ErrorCode::InvalidMessage);
         }
     }
+    if let Some(display) = &state.display {
+        validate_display(display)?;
+    }
     if state.encoded_len() > MAX_STATE_BYTES {
         return Err(ErrorCode::LimitExceeded);
+    }
+    Ok(())
+}
+
+/// D025: the same ranges as the client's YsmDisplayState; invalid owner values are rejected.
+fn validate_display(display: &YsmDisplay) -> Result<()> {
+    let input = |value: Option<f32>| value.is_none_or(|value| value.is_finite() && (-1.0..=1.0).contains(&value));
+    if display.food_level.is_some_and(|value| value > 20)
+        || display.experience_level.is_some_and(|value| value > i32::MAX as u32)
+        || !input(display.strafe_input)
+        || !input(display.vertical_input)
+        || !input(display.forward_input)
+        || (!display.has_effects && !display.effects.is_empty())
+        || display.effects.len() > 64
+    {
+        return Err(ErrorCode::InvalidMessage);
+    }
+    let mut seen = HashSet::new();
+    for effect in &display.effects {
+        let valid_id = effect.id.len() <= 128
+            && effect.id.split_once(':').is_some_and(|(namespace, path)| {
+                !namespace.is_empty()
+                    && !path.is_empty()
+                    && namespace.bytes().all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || b"_.-".contains(&byte))
+                    && path.bytes().all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || b"_./-".contains(&byte))
+            });
+        if !valid_id || !(1..=256).contains(&effect.level) || !seen.insert(effect.id.as_str()) {
+            return Err(ErrorCode::InvalidMessage);
+        }
     }
     Ok(())
 }
@@ -274,6 +306,9 @@ fn merge(target: &mut YsmState, delta: &YsmState) {
     }
     if delta.playbacks.is_some() {
         target.playbacks = delta.playbacks.clone();
+    }
+    if delta.display.is_some() {
+        target.display = delta.display.clone();
     }
 }
 
