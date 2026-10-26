@@ -500,6 +500,7 @@ async fn private_ysm_recovery_and_queued_state_stop_after_opt_out_in_both_protoc
             actions: Some(Actions::default()),
             controllers: Some(Controllers::default()),
             playbacks: Some(Playbacks::default()),
+            display: None,
         }),
     };
     let mut host = Peer::connect(&server, 1).await;

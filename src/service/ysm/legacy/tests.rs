@@ -82,6 +82,7 @@ fn expected_snapshot() -> Frame {
                     flags: 7,
                 }],
             }),
+            display: None,
         },
         events: vec![
             Event {

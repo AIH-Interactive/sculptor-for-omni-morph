@@ -285,6 +285,7 @@ async fn migration_child() {
                         actions: Some(Default::default()),
                         controllers: Some(Default::default()),
                         playbacks: Some(Default::default()),
+                        display: None,
                     }),
                 },
             );

@@ -74,6 +74,7 @@ fn snapshot_body(owner: Uuid, publisher: Uuid) -> envelope::Body {
                     ..Default::default()
                 }],
             }),
+            display: None,
         }),
     })
 }

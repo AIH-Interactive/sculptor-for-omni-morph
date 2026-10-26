@@ -77,7 +77,8 @@ pub(crate) async fn prepare(base: &str, http: &reqwest::Client, state: &AppState
                     controls: Some(Controls::default()),
                     actions: Some(Actions::default()),
                     controllers: Some(Controllers::default()),
-                    playbacks: Some(Playbacks::default())
+                    playbacks: Some(Playbacks::default()),
+                    display: None,
                 })
             }))
             .await,

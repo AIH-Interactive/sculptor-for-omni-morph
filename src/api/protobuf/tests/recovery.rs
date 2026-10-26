@@ -85,6 +85,7 @@ pub(super) async fn integration(base: &str, http: &reqwest::Client, state: &AppS
             actions: Some(Actions::default()),
             controllers: Some(Controllers::default()),
             playbacks: Some(Playbacks::default()),
+            display: None,
         }),
     };
     let mut entity = first.clone();

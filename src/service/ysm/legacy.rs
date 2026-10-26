@@ -169,6 +169,7 @@ pub fn decode(bytes: &[u8], asset_revision: u64) -> Result<Frame> {
         actions,
         controllers,
         playbacks,
+        display: None,
     };
     validate_state(&state, snapshot)?;
     let count = input.byte()? as usize;
