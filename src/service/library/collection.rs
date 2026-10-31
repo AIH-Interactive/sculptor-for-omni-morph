@@ -138,7 +138,14 @@ impl Storage {
         super::super::resource::operation_id(id)?;
         self.library_transaction(|transaction| {
             if input.in_outfit {
-                require_action(&model(transaction, id, actor, false)?, "equip")?;
+                let model = model(transaction, id, actor, false)?;
+                // Whole avatars are equipped; accessories and outfit documents only join the outfit.
+                let action = if model.summary.resource_kind == crate::service::outfit::ResourceKind::Avatar {
+                    "equip"
+                } else {
+                    "preview"
+                };
+                require_action(&model, action)?;
             }
             let changed = transaction.execute(
                 "UPDATE library_collection SET in_outfit = ?3 WHERE player_uuid = ?1 AND model_id = ?2",

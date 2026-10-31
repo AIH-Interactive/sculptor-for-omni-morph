@@ -1,4 +1,4 @@
-use super::*;
+﻿use super::*;
 
 async fn members(server: &Server, player: u128) -> Value {
     let response = server
@@ -240,4 +240,71 @@ async fn migration_backfills_only_published_active_submissions() {
     assert_eq!(collection["items"][0]["model_id"], active);
     super::lifecycle::restart(&mut server).await;
     assert_eq!(members(&server, 1).await["total"], 1);
+}
+
+#[tokio::test]
+async fn accessory_collection_outfit_membership_does_not_require_equip() {
+    let server = Server::start().await;
+    let bytes = figura_package();
+    let mut input = upload_input(&bytes, "PUBLIC");
+    input["metadata_source"] = json!("cosmetic.json");
+    input["metadata"]["resource_kind"] = json!("ACCESSORY");
+    input["metadata"]["accessory_metadata"] = json!({
+        "schema_version": 1, "category": "FutureCategory", "cosmetic_anchor": "wing_anchor",
+        "default_transform": {"position": [0, 0, 0], "rotation": [0, 0, 0], "scale": [1, 1, 1]},
+        "supported_bases": ["VANILLA", "FIGURA", "YSM"], "has_bones": false,
+        "skeleton_revision": "", "skeleton_hash": "", "display_bones": false,
+        "edit_bones": false, "exported_bones": [], "validation_source": "SERVER_VERIFIED"
+    });
+    let response = server
+        .request(Method::POST, "/api/library/v1/uploads", 1)
+        .json(&input)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 200);
+    let reservation: Value = response.json().await.unwrap();
+    assert_eq!(
+        server
+            .request(
+                Method::PUT,
+                reservation["relative_path"].as_str().unwrap(),
+                1
+            )
+            .header("content-type", "application/octet-stream")
+            .body(bytes)
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        204
+    );
+    let path = format!(
+        "/api/library/v1/uploads/{}/commit",
+        input["operation_id"].as_str().unwrap()
+    );
+    assert_eq!(
+        server
+            .request(Method::POST, &path, 1)
+            .json(&json!({"operation_id": library::random_id(), "expected_revision": 1}))
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        200
+    );
+    let id = reservation["model_id"].as_str().unwrap();
+    let path = format!("/api/library/v1/collection/{id}/outfit");
+    assert_eq!(
+        server
+            .request(Method::PUT, &path, 1)
+            .json(&json!({"in_outfit": true}))
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        200,
+        "accessories join the outfit without the avatar-only equip action"
+    );
+    assert_eq!(members(&server, 1).await["items"][0]["in_outfit"], true);
 }
