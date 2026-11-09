@@ -299,8 +299,9 @@ async fn catalog_origin_supports_legacy_proxy_metadata_and_validates_explicit_na
         .unwrap();
     assert_eq!(first.status(), 200);
     let first: Value = first.json().await.unwrap();
+    // Private equipment is shown to other players by default.
     assert!(
-        !server
+        server
             .state
             .storage
             .outfit_current(Uuid::from_u128(1))

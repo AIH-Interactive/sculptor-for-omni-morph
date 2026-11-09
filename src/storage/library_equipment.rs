@@ -12,14 +12,36 @@ pub(crate) struct LibraryEquip {
     pub operation_id: String,
     pub model_revision: u64,
     pub expected_equipment_revision: u64,
-    #[serde(default)]
-    pub show_private_equipment: bool,
-    /// General equipment visibility; absent preserves legacy public/default-private behavior.
+    /// Legacy private display choice; absent keeps the saved choice, or shows the model by default.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub show_private_equipment: Option<bool>,
+    /// General equipment visibility; absent preserves the saved public choice.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub show_equipment: Option<bool>,
 }
 
+impl LibraryEquip {
+    /// The explicit display choice of this request, if any.
+    pub(crate) fn requested_display(&self) -> Option<bool> {
+        self.show_equipment.or(self.show_private_equipment)
+    }
+}
+
 impl Storage {
+    /// The saved private display choice of one equipped library alias.
+    pub(crate) fn library_private_display(&self, owner: Uuid, asset_id: &str) -> Result<bool> {
+        self.library_read(|database| {
+            database
+                .query_row(
+                    "SELECT COALESCE((SELECT show_private_equipment FROM library_equipment_settings
+                     WHERE resource_owner = ?1 AND asset_id = ?2 AND revision = 1), 0)",
+                    params![owner.to_string(), asset_id],
+                    |row| row.get(0),
+                )
+                .map_err(sql_error)
+        })
+    }
+
     pub(crate) fn library_equipment_session(&self, owner: Uuid) -> Result<serde_json::Value> {
         self.library_read(|database| {
             let state = database.query_row(
@@ -75,7 +97,7 @@ impl Storage {
                 return Err(ErrorCode::Conflict);
             }
             if item.policy.visibility == Visibility::Private
-                && input.show_equipment.unwrap_or(input.show_private_equipment)
+                && input.requested_display() == Some(true)
                 && (actor.uuid != item.policy.uploader
                     || item.policy.moderation != Moderation::Active)
             {
@@ -193,7 +215,7 @@ impl Storage {
                     return Err(ErrorCode::Conflict);
                 }
                 if item.policy.visibility == Visibility::Private
-                    && input.show_equipment.unwrap_or(input.show_private_equipment)
+                    && input.requested_display() == Some(true)
                     && (actor.uuid != item.policy.uploader
                         || item.policy.moderation != Moderation::Active)
                 {
@@ -215,12 +237,22 @@ impl Storage {
                                 library::sql_integer(input.model_revision)?
                             ],
                         ).map_err(sql_error)?;
-                        transaction.execute(
-                            "INSERT INTO library_equipment_settings VALUES (?1, ?2, 1, ?3)
-                             ON CONFLICT(resource_owner, asset_id, revision)
-                             DO UPDATE SET show_private_equipment = excluded.show_private_equipment",
-                            params![actor.uuid.to_string(), alias_id, input.show_equipment.unwrap_or(input.show_private_equipment)],
-                        ).map_err(sql_error)?;
+                        if let Some(showing) = input.requested_display() {
+                            transaction.execute(
+                                "INSERT INTO library_equipment_settings VALUES (?1, ?2, 1, ?3)
+                                 ON CONFLICT(resource_owner, asset_id, revision)
+                                 DO UPDATE SET show_private_equipment = excluded.show_private_equipment",
+                                params![actor.uuid.to_string(), alias_id, showing],
+                            ).map_err(sql_error)?;
+                        } else {
+                            // No choice in this request: keep a saved choice. Private models are shown to
+                            // other players by default; public ones keep their separate wardrobe setting.
+                            let private = item.policy.visibility == Visibility::Private;
+                            transaction.execute(
+                                "INSERT OR IGNORE INTO library_equipment_settings VALUES (?1, ?2, 1, ?3)",
+                                params![actor.uuid.to_string(), alias_id, private],
+                            ).map_err(sql_error)?;
+                        }
                         if let Some(showing) = input.show_equipment {
                             transaction.execute(
                                 "INSERT INTO library_wardrobe_settings VALUES (?1, ?2, 1, ?3)
@@ -230,7 +262,11 @@ impl Storage {
                             ).map_err(sql_error)?;
                         }
                         let showing = if item.policy.visibility == Visibility::Private {
-                            input.show_equipment.unwrap_or(input.show_private_equipment)
+                            transaction.query_row(
+                                "SELECT show_private_equipment FROM library_equipment_settings
+                                 WHERE resource_owner = ?1 AND asset_id = ?2 AND revision = 1",
+                                params![actor.uuid.to_string(), alias_id], |row| row.get(0),
+                            ).map_err(sql_error)?
                         } else {
                             transaction.query_row(
                                 "SELECT COALESCE((SELECT show_equipment FROM library_wardrobe_settings

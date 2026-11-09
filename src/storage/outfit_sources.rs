@@ -159,7 +159,8 @@ impl Source {
         let granted: bool = database
             .query_row(
                 "SELECT EXISTS(SELECT 1 FROM library_grants WHERE model_id = ?1 AND player_uuid = ?2)",
-                params![resource_id.to_string(), observer.to_string()],
+                // The wearer's grant decides world display; the observer needs none of its own.
+                params![resource_id.to_string(), wearer.to_string()],
                 |row| row.get(0),
             )
             .map_err(sql_error)?;

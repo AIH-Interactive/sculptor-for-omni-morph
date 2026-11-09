@@ -31,7 +31,8 @@ async fn session_exposes_only_the_authenticated_players_current_equipment_revisi
     assert_eq!(equipped["equipment_revision"], 1);
     assert_eq!(equipped["equipment_model_id"], id);
     assert_eq!(equipped["equipment_model_revision"], 1);
-    assert_eq!(equipped["show_private_equipment"], false);
+    // A private model is shown to other players unless the wearer hides it.
+    assert_eq!(equipped["show_private_equipment"], true);
     let mut visible = equip_input(1);
     visible["show_private_equipment"] = json!(true);
     assert_eq!(server.request(Method::POST, &path, 1).json(&visible)
@@ -635,7 +636,7 @@ async fn library_equipment_alias_is_atomic_idempotent_and_retains_its_source() {
 }
 
 #[tokio::test]
-async fn private_equipment_intent_defaults_closed_and_updates_without_opening_catalog() {
+async fn private_equipment_display_defaults_open_keeps_an_explicit_hide_and_never_opens_catalog() {
     let server = Server::start().await;
     let (id, bytes) = server.upload_model("PRIVATE").await;
     let path = format!("/api/library/v1/models/{id}/equip");
@@ -657,8 +658,9 @@ async fn private_equipment_intent_defaults_closed_and_updates_without_opening_ca
         .unwrap();
     assert_eq!(response.status(), 200);
     let first = response.json::<Value>().await.unwrap();
-    assert_eq!(first["show_private_equipment"], false);
-    assert_profiles(&server, 2, false).await;
+    // Without an explicit choice the wearer's private model is shown to other players in the world.
+    assert_eq!(first["show_private_equipment"], true);
+    assert_profiles(&server, 2, true).await;
     assert_profiles(&server, 1, true).await;
     let scope = server
         .state
@@ -686,7 +688,7 @@ async fn private_equipment_intent_defaults_closed_and_updates_without_opening_ca
             .bearer_auth(&scope.session_id)
             .header("x-omnimorph-epoch", "77")
     };
-    assert_eq!(download().send().await.unwrap().status(), 404);
+    assert_eq!(download().send().await.unwrap().status(), 200);
     let mut input = equip_input(1);
     input["show_private_equipment"] = json!(true);
     let response = server
@@ -730,7 +732,8 @@ async fn private_equipment_intent_defaults_closed_and_updates_without_opening_ca
             .status(),
         404
     );
-    let close = equip_input(2);
+    let mut close = equip_input(2);
+    close["show_private_equipment"] = json!(false);
     let response = server
         .request(Method::POST, &path, 1)
         .json(&close)
@@ -753,7 +756,17 @@ async fn private_equipment_intent_defaults_closed_and_updates_without_opening_ca
             .revision,
         3
     );
-    let mut reopen = equip_input(3);
+    // Equipping again without a choice keeps the explicit hide.
+    let response = server
+        .request(Method::POST, &path, 1)
+        .json(&equip_input(3))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 200);
+    assert_eq!(response.json::<Value>().await.unwrap()["show_private_equipment"], false);
+    assert_profiles(&server, 2, false).await;
+    let mut reopen = equip_input(4);
     reopen["show_private_equipment"] = json!(true);
     assert_eq!(
         server
@@ -773,7 +786,7 @@ async fn private_equipment_intent_defaults_closed_and_updates_without_opening_ca
             &crate::protocol::v1::Equip {
                 operation_id: library::random_id(),
                 clear: true,
-                expected_revision: 4,
+                expected_revision: 5,
                 ..Default::default()
             },
         )

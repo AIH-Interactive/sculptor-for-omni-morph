@@ -144,7 +144,7 @@ async fn legacy(server: &Server, player: u128, ysm: bool) -> Socket {
 }
 
 #[tokio::test]
-async fn authorized_observer_matrix_and_revocation_do_not_inherit_admin_rights() {
+async fn worn_authorized_model_is_seen_by_every_observer_and_observer_revocation_keeps_it() {
     let server = Server::start().await;
     let capabilities = server
         .request(Method::GET, "/api/library/v1/capabilities", 1)
@@ -199,8 +199,9 @@ async fn authorized_observer_matrix_and_revocation_do_not_inherit_admin_rights()
     );
 
     // A is the uploader, B has a grant, C has none, D is configured as an administrator.
-    // Administrator catalog access must never become an observer's model-use grant.
-    for (player, visible) in [(1, true), (2, true), (3, false), (4, false)] {
+    // World display follows the wearer's right to use the model, so every observer sees it;
+    // downloading and using the model keep their own authorization checks.
+    for (player, visible) in [(1, true), (2, true), (3, true), (4, true)] {
         super::equipment::assert_profiles(&server, player, visible).await;
         let mut peer = Peer::connect(&server, player).await;
         let response = peer
@@ -217,16 +218,6 @@ async fn authorized_observer_matrix_and_revocation_do_not_inherit_admin_rights()
         peer.socket.close(None).await.unwrap();
     }
 
-    let mut granted = Peer::connect(&server, 2).await;
-    granted.subscribe(owner).await;
-    let mut old = legacy(&server, 2, false).await;
-    tokio::time::timeout(Duration::from_secs(2), async {
-        while server.state.subscribes.publisher(owner).receiver_count() != 2 {
-            tokio::task::yield_now().await;
-        }
-    })
-    .await
-    .unwrap();
     let revoke = json!({"operation_id": library::random_id(), "expected_revision": 4});
     assert_eq!(
         server
@@ -238,19 +229,9 @@ async fn authorized_observer_matrix_and_revocation_do_not_inherit_admin_rights()
             .status(),
         200
     );
-    let Body::AvatarChanged(change) = granted.next().await else {
-        panic!("Revoking an observer grant must invalidate its current model");
-    };
-    assert!(change.tombstone);
-    assert!(change.equipped.unwrap().primary.is_none());
-    assert!(matches!(
-        S2CMessage::try_from(binary(&mut old).await.as_slice()).unwrap(),
-        S2CMessage::Event(value) if value == owner
-    ));
-    super::equipment::assert_profiles(&server, 2, false).await;
+    // Revoking an observer's grant leaves the uploader's worn model visible to that observer.
+    super::equipment::assert_profiles(&server, 2, true).await;
     super::equipment::assert_profiles(&server, 1, true).await;
-    granted.socket.close(None).await.unwrap();
-    old.close(None).await.unwrap();
 }
 
 #[tokio::test]

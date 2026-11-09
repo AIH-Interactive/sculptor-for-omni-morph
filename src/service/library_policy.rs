@@ -62,17 +62,20 @@ impl Policy {
         }
     }
 
-    /// Distribution is evaluated as the observer, never with the wearer's grants.
-    pub fn can_distribute(self, wearer: Uuid, observer: Uuid, granted: bool) -> bool {
-        self.can_render_equipment(wearer, observer, granted, false)
+    /// Distribution of worn equipment follows the world display rule of `can_render_equipment`.
+    pub fn can_distribute(self, wearer: Uuid, observer: Uuid, wearer_granted: bool) -> bool {
+        self.can_render_equipment(wearer, observer, wearer_granted, false)
     }
 
-    /// This exception belongs to the current source-bound equipment, not catalog access.
+    /// Whether observers see the avatar a wearer currently uses in the game world. This belongs to the
+    /// current source-bound equipment, not catalog access: it is decided by the wearer's right to use
+    /// the model (`wearer_granted` is the wearer's grant), never by the observer's own grant. Private
+    /// models are only worn by their uploader and follow the wearer's display setting.
     pub fn can_render_equipment(
         self,
         wearer: Uuid,
         observer: Uuid,
-        granted: bool,
+        wearer_granted: bool,
         show_private_equipment: bool,
     ) -> bool {
         if self.moderation != Moderation::Active {
@@ -82,12 +85,11 @@ impl Policy {
             return wearer == self.uploader && (wearer == observer || show_private_equipment);
         }
         self.permissions(Actor {
-            uuid: observer,
+            uuid: wearer,
             admin_context: false,
-            granted,
+            granted: wearer_granted,
         })
         .use_model
-            && (self.visibility == Visibility::Public || wearer == observer)
     }
 }
 
@@ -152,7 +154,8 @@ mod tests {
         assert!(!policy.can_distribute(owner, observer, true));
         assert!(policy.can_distribute(owner, owner, false));
         policy.visibility = Visibility::Public;
-        assert!(!policy.can_distribute(owner, observer, false));
+        // The observer's own grant is irrelevant: the uploader may always wear the model.
+        assert!(policy.can_distribute(owner, observer, false));
         assert!(policy.can_distribute(owner, observer, true));
         policy.moderation = Moderation::Blocked;
         assert!(!policy.can_distribute(owner, owner, true));
@@ -185,5 +188,32 @@ mod tests {
                 assert!(!policy.can_render_equipment(owner, observer, true, true));
             }
         }
+    }
+    #[test]
+    fn world_display_follows_the_wearer_authorization_not_the_observer() {
+        let owner = Uuid::from_u128(1);
+        let wearer = Uuid::from_u128(2);
+        let observer = Uuid::from_u128(3);
+        let mut policy = Policy {
+            uploader: owner,
+            visibility: Visibility::Public,
+            requires_authorization: true,
+            moderation: Moderation::Active,
+        };
+        // An authorized wearer is seen by observers without a grant of their own.
+        assert!(policy.can_render_equipment(wearer, observer, true, false));
+        // A wearer without (or after losing) the grant is not displayed.
+        assert!(!policy.can_render_equipment(wearer, observer, false, false));
+        policy.requires_authorization = false;
+        assert!(policy.can_render_equipment(wearer, observer, false, false));
+        // Private models are only worn by their uploader and shown when the display setting allows it.
+        policy.visibility = Visibility::Private;
+        assert!(!policy.can_render_equipment(wearer, observer, true, true));
+        assert!(policy.can_render_equipment(owner, observer, false, true));
+        assert!(!policy.can_render_equipment(owner, observer, false, false));
+        // Blocked models stay hidden whatever the display rule.
+        policy.visibility = Visibility::Public;
+        policy.moderation = Moderation::Blocked;
+        assert!(!policy.can_render_equipment(owner, observer, true, true));
     }
 }

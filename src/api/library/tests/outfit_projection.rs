@@ -159,7 +159,8 @@ async fn outfit_projection_rechecks_wearer_and_observer_grants_independently() {
     configuration.base = Some(reference(&server, &id, &bytes));
     configuration.show_equipment = true;
     let configuration = apply(&server, 2, configuration);
-    assert!(project(&server, 2, 3).configuration.is_none());
+    // The wearer is authorized, so an observer without a grant still sees the outfit.
+    assert!(project(&server, 2, 3).configuration.is_some());
     assert!(project(&server, 2, 2).configuration.is_some());
     grant(&server, &id, 3, true);
     let snapshot = project(&server, 2, 3);

@@ -318,10 +318,11 @@ pub(super) fn resource_access_with_outfit_limits(
             |row| row.get(0),
         )
         .map_err(sql_error)?;
+    // World display depends on the wearer's right to use the model, not on the observer's grant.
     let granted: bool = database
         .query_row(
             "SELECT EXISTS(SELECT 1 FROM library_grants WHERE model_id = ?1 AND player_uuid = ?2)",
-            params![source, observer.uuid.to_string()],
+            params![source, owner.to_string()],
             |row| row.get(0),
         )
         .map_err(sql_error)?;

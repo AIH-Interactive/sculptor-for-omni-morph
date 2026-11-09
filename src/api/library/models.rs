@@ -15,12 +15,22 @@ pub async fn equip(
     let limits = state.config.read().await.outfit.limits.clone();
     let storage = state.storage.clone();
     let model_revision = input.model_revision;
-    let show_private_equipment = input.show_private_equipment;
+    let requested_display = input.requested_display();
     let model_id = id.clone();
     let result =
         blocking(move || storage.library_equip(actor, &model_id, &input, &origin, &limits)).await?;
     crate::service::equipment::changed(&state, actor.uuid).await;
     let primary = result.primary.as_ref().ok_or(ErrorCode::Internal)?;
+    // An explicit choice is echoed as before; otherwise report the saved choice of this alias.
+    let show_private_equipment = match requested_display {
+        Some(showing) => showing,
+        None => {
+            let storage = state.storage.clone();
+            let owner = actor.uuid;
+            let asset = primary.asset_id.clone();
+            blocking(move || storage.library_private_display(owner, &asset)).await?
+        }
+    };
     json_response(json!({
         "model_id": id,
         "model_revision": model_revision,

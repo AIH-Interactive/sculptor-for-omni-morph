@@ -261,8 +261,9 @@ async fn outfit_observer_http_rechecks_both_players_grants_on_an_existing_body_u
     apply(&server, 2, configuration);
     let own = snapshot(&server, 2, 2).await;
     let path = own["resources"][0]["relative_path"].as_str().unwrap();
-    assert!(snapshot(&server, 2, 3).await["configuration"].is_null());
-    assert_eq!(body(&server, path, 3).await.status(), 404);
+    // The wearer is authorized, so an observer without a grant still receives the worn outfit.
+    assert!(!snapshot(&server, 2, 3).await["configuration"].is_null());
+    assert_eq!(body(&server, path, 3).await.status(), 200);
     grant(&server, &id, 3, true);
     assert_eq!(
         body(&server, path, 3).await.bytes().await.unwrap().as_ref(),
@@ -276,8 +277,9 @@ async fn outfit_observer_http_rechecks_both_players_grants_on_an_existing_body_u
         body(&server, path, 3).await.bytes().await.unwrap().as_ref(),
         bytes
     );
+    // The observer's own grant does not decide world display of an authorized wearer.
     grant(&server, &id, 3, false);
-    assert_eq!(body(&server, path, 3).await.status(), 404);
+    assert_eq!(body(&server, path, 3).await.status(), 200);
 }
 
 #[tokio::test]
