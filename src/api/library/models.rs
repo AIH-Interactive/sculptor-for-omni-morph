@@ -33,8 +33,10 @@ pub async fn equip(
 }
 
 pub async fn capabilities(State(state): State<AppState>, headers: HeaderMap) -> Result<Response> {
-    player(&state, &headers)?;
+    let player = player(&state, &headers)?;
     let config = state.config.read().await;
+    // Only players listed as administrators see the management entry; the login itself is still verified.
+    let admin_login_available = config.model_library.admins.iter().any(|admin| admin.uuid == player);
     json_response(
         json!({"enabled": true, "version": 1, "max_upload_bytes": config.model_library.max_upload_bytes,
         "formats": ["zip", "ysm"], "model_types": ["FIGURA", "YSM_PLAIN", "YSM_ENCRYPTED"],
@@ -44,7 +46,7 @@ pub async fn capabilities(State(state): State<AppState>, headers: HeaderMap) -> 
         "max_image_bytes": config.model_library.max_image_bytes,
         "max_image_width": config.model_library.max_image_width,
         "max_image_height": config.model_library.max_image_height,
-        "categories": config.model_library.effective_categories(), "admin_login_available": !config.model_library.admins.is_empty(),
+        "categories": config.model_library.effective_categories(), "admin_login_available": admin_login_available,
         "preview_cache_seconds": config.model_library.preview_cache_seconds}),
     )
 }

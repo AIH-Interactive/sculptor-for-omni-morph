@@ -465,3 +465,21 @@ async fn a_hash_ban_hides_existing_catalog_copies_and_revokes_their_transfers() 
         404
     );
 }
+
+#[tokio::test]
+async fn management_entry_is_offered_only_to_configured_administrators() {
+    let _serial = ADMIN_TESTS.lock().await;
+    let server = Server::start().await;
+    configure(&server).await;
+    for (player, expected) in [(4, true), (2, false)] {
+        let capabilities: Value = server
+            .request(Method::GET, "/api/library/v1/capabilities", player)
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        assert_eq!(capabilities["admin_login_available"], expected, "player {player}");
+    }
+}
