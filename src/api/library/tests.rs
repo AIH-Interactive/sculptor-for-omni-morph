@@ -869,3 +869,17 @@ fn metadata_limits_and_literal_text_budget_are_enforced() {
     metadata.display_name = "§kHidden".into();
     assert!(metadata.validate(&categories).is_err());
 }
+
+async fn streamed_upload_result(response: reqwest::Response) -> Value {
+    assert_eq!(response.status(), 200);
+    assert_eq!(response.headers()["content-type"], "application/x-ndjson");
+    let body = response.text().await.unwrap();
+    let events: Vec<Value> = body
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect();
+    assert_eq!(events[0]["stage"], "VALIDATING");
+    assert_eq!(events[1]["stage"], "REVIEWING");
+    assert_eq!(events.len(), 3);
+    events[2]["result"].clone()
+}

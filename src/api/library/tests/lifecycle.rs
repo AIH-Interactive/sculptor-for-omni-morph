@@ -65,12 +65,24 @@ async fn upload_responses_report_persisted_publication_policy() {
                 ),
                 1,
             )
+            .header(
+                "accept",
+                if visibility == "PRIVATE" {
+                    "application/x-ndjson"
+                } else {
+                    "application/json"
+                },
+            )
             .json(&json!({"operation_id": library::random_id(), "expected_revision": 1}))
             .send()
             .await
             .unwrap();
         assert_eq!(response.status(), 200);
-        let committed = response.json::<Value>().await.unwrap();
+        let committed = if visibility == "PRIVATE" {
+            streamed_upload_result(response).await
+        } else {
+            response.json::<Value>().await.unwrap()
+        };
         assert_eq!(committed["visibility"], visibility);
         assert_eq!(committed["published"], true);
         assert_eq!(committed["moderation_status"], "ACTIVE");
@@ -130,12 +142,13 @@ async fn upload_commit_reports_moderation_override_instead_of_draft_visibility()
             ),
             1,
         )
+        .header("accept", "application/x-ndjson")
         .json(&json!({"operation_id": library::random_id(), "expected_revision": 1}))
         .send()
         .await
         .unwrap();
     assert_eq!(response.status(), 200);
-    let committed = response.json::<Value>().await.unwrap();
+    let committed = streamed_upload_result(response).await;
     assert_eq!(committed["visibility"], "PRIVATE");
     assert_eq!(committed["moderation_status"], "BLOCKED");
     assert_eq!(committed["published"], true);

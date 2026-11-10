@@ -13,6 +13,7 @@ mod outfit_local_sources;
 mod collection;
 mod transfers;
 mod uploads;
+mod upload_progress;
 mod wardrobe;
 mod appeals;
 

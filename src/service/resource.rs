@@ -12,6 +12,8 @@ use uuid::Uuid;
 mod downloads;
 pub(crate) use downloads::{guarded_body, DownloadPermit};
 
+pub(crate) type UploadProgress = std::sync::Arc<dyn Fn(&'static str) + Send + Sync>;
+
 struct PendingUpload {
     request: UploadRequest,
     fingerprint: Vec<u8>,
@@ -395,7 +397,7 @@ pub async fn commit_upload(
         Err(ErrorCode::NotFound) => {}
         Err(error) => return Err(error),
     }
-    commit_upload_inner(state, owner, request, None).await
+    commit_upload_inner(state, owner, request, None, None).await
 }
 
 pub(crate) async fn commit_library_upload(
@@ -403,8 +405,9 @@ pub(crate) async fn commit_library_upload(
     owner: Uuid,
     request: &CommitUpload,
     context: super::library::uploads::CommitContext,
+    progress: Option<UploadProgress>,
 ) -> Result<AvatarDescriptor, ErrorCode> {
-    commit_upload_inner(state, owner, request, Some(context)).await
+    commit_upload_inner(state, owner, request, Some(context), progress).await
 }
 
 async fn commit_upload_inner(
@@ -412,6 +415,7 @@ async fn commit_upload_inner(
     owner: Uuid,
     request: &CommitUpload,
     context: Option<super::library::uploads::CommitContext>,
+    progress: Option<UploadProgress>,
 ) -> Result<AvatarDescriptor, ErrorCode> {
     let operation = operation_id(&request.operation_id)?;
     let outfit_limits = state.config.read().await.outfit.limits.clone();
@@ -481,6 +485,9 @@ async fn commit_upload_inner(
     let limits = super::package::PackageLimits::from_limitations(
         &state.config.read().await.limitations,
     );
+    if let Some(progress) = &progress {
+        progress("VALIDATING");
+    }
     let inspected = tokio::task::spawn_blocking(move || {
         super::package::inspect_upload(&inspection_path, limits)
     })
@@ -540,7 +547,7 @@ async fn commit_upload_inner(
                     transaction, owner, &upload_operation, descriptor, &outfit_limits,
                 )?;
                 if let Some(context) = context {
-                    context.publish(transaction, descriptor, &inspected)?;
+                    context.publish(transaction, descriptor, &inspected, progress.as_ref())?;
                 }
                 Ok(())
             },

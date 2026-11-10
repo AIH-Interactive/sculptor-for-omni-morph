@@ -111,6 +111,21 @@ pub async fn commit(
 ) -> Result<Response> {
     let actor = actor(&state, &headers).await?;
     let input = parse_json(body)?;
+    if super::upload_progress::requested(&headers) {
+        return super::upload_progress::response(move |progress| {
+            finish_commit(state, actor, operation, input, Some(progress))
+        });
+    }
+    json_response(finish_commit(state, actor, operation, input, None).await?)
+}
+
+async fn finish_commit(
+    state: AppState,
+    actor: Actor,
+    operation: String,
+    input: Mutation,
+    progress: Option<resource::UploadProgress>,
+) -> Result<Value> {
     let storage = state.storage.clone();
     let lookup = operation.clone();
     let reservation = blocking(move || storage.library_reservation(actor.uuid, &lookup)).await?;
@@ -136,10 +151,11 @@ pub async fn commit(
             reservation,
             input,
         },
+        progress,
     )
     .await?;
     let storage = state.storage.clone();
-    json_response(blocking(move || storage.library_upload_status(actor, &model_id)).await?)
+    blocking(move || storage.library_upload_status(actor, &model_id)).await
 }
 
 pub async fn cancel(

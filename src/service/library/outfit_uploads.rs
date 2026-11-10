@@ -115,7 +115,11 @@ impl Storage {
         input: &OutfitUploadInput,
         categories: &[String],
         limits: &OutfitLimits,
+        progress: Option<&super::super::resource::UploadProgress>,
     ) -> Result<Value> {
+        if let Some(progress) = progress {
+            progress("VALIDATING");
+        }
         input.metadata.validate(categories)?;
         text(name, 64, false)?;
         limits.validate()?;
@@ -163,6 +167,9 @@ impl Storage {
                         &local_sources,
                         limits,
                     )?;
+                    if let Some(progress) = progress {
+                        progress("REVIEWING");
+                    }
                     if let Some(base) = &configuration.base {
                         dependency(transaction, actor, origin, base, ResourceKind::Avatar)?;
                     }
@@ -226,7 +233,14 @@ impl Storage {
                         params![actor.uuid.to_string(), id, now],
                     ).map_err(sql_error)?;
                     advance(transaction, &id)?;
-                    serde_json::to_vec(&json!({"model_id": id, "published": true, "revision": 1, "policy_revision": 2}))
+                    serde_json::to_vec(&json!({
+                        "model_id": id,
+                        "published": true,
+                        "revision": 1,
+                        "policy_revision": 2,
+                        "visibility": visibility,
+                        "moderation_status": "ACTIVE"
+                    }))
                         .map_err(|_| ErrorCode::Internal)
                 },
             )?;

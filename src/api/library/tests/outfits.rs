@@ -354,16 +354,28 @@ async fn published_outfit_uses_json_catalog_policy_and_membership() {
         "description": "Fixed dependencies", "tags": ["preset"], "visibility": "PUBLIC",
         "requires_authorization": false}, "configuration": configuration});
     let mut published = Value::Null;
-    for _ in 0..2 {
+    for attempt in 0..2 {
         let response = server
             .request(Method::POST, "/api/library/v1/uploads/outfit", 1)
             .header("x-omnimorph-origin", &server.base)
+            .header(
+                "accept",
+                if attempt == 0 {
+                    "application/x-ndjson"
+                } else {
+                    "application/json"
+                },
+            )
             .json(&input)
             .send()
             .await
             .unwrap();
         assert_eq!(response.status(), 200, "{}", response.text().await.unwrap());
-        let value: Value = response.json().await.unwrap();
+        let value: Value = if attempt == 0 {
+            streamed_upload_result(response).await
+        } else {
+            response.json().await.unwrap()
+        };
         if !published.is_null() {
             assert_eq!(value, published);
         }

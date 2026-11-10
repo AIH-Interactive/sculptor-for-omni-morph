@@ -156,22 +156,36 @@ pub async fn publish(
     let limits = config.outfit.limits.clone();
     let categories = config.model_library.effective_categories();
     drop(config);
-    let storage = state.storage.clone();
-    let result = blocking(move || {
-        storage.library_publish_outfit(actor, &name, &origin, &input, &categories, &limits)
-    })
-    .await
-    .map_err(|error| {
-        if has_local && matches!(error.status, StatusCode::NOT_FOUND | StatusCode::FORBIDDEN) {
-            LibraryError {
-                status: StatusCode::BAD_REQUEST,
-                code: "OUTFIT_DEPENDENCY_NOT_DISTRIBUTABLE",
+    let work = move |progress: Option<crate::service::resource::UploadProgress>| async move {
+        let storage = state.storage.clone();
+        let result = blocking(move || {
+            storage.library_publish_outfit(
+                actor,
+                &name,
+                &origin,
+                &input,
+                &categories,
+                &limits,
+                progress.as_ref(),
+            )
+        })
+        .await
+        .map_err(|error| {
+            if has_local && matches!(error.status, StatusCode::NOT_FOUND | StatusCode::FORBIDDEN) {
+                LibraryError {
+                    status: StatusCode::BAD_REQUEST,
+                    code: "OUTFIT_DEPENDENCY_NOT_DISTRIBUTABLE",
+                }
+            } else {
+                error
             }
-        } else {
-            error
-        }
-    })?;
-    json_response(result)
+        })?;
+        Ok(result)
+    };
+    if super::upload_progress::requested(&headers) {
+        return super::upload_progress::response(move |progress| work(Some(progress)));
+    }
+    json_response(work(None).await?)
 }
 
 #[derive(serde::Deserialize)]

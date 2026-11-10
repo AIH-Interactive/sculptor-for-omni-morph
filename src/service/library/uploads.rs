@@ -330,6 +330,7 @@ impl CommitContext {
         transaction: &Transaction<'_>,
         descriptor: &AvatarDescriptor,
         inspected: &super::super::package::PackageIdentity,
+        progress: Option<&super::super::resource::UploadProgress>,
     ) -> Result<()> {
         let id = &self.reservation.model_id;
         let item = model(transaction, id, self.actor, true)?;
@@ -379,6 +380,9 @@ impl CommitContext {
                             params![id, kind, faster_hex::hex_string(hash)],
                         )
                         .map_err(sql_error)?;
+                }
+                if let Some(progress) = progress {
+                    progress("REVIEWING");
                 }
                 // A known banned package cannot be republished under a fresh library ID.
                 let banned: bool = transaction.query_row("SELECT EXISTS(SELECT 1 FROM library_revision_hashes r JOIN library_active_blocked_hashes b
