@@ -348,6 +348,7 @@ pub(crate) fn require_action(model: &Model, action: &str) -> Result<()> {
 #[serde(default, deny_unknown_fields)]
 pub struct ListQuery {
     pub scope: String,
+    pub resource_kind: String,
     pub q: String,
     pub category: String,
     pub tags: String,
@@ -374,6 +375,12 @@ impl Storage {
             return Err(ErrorCode::Forbidden);
         }
         actor.admin_context = scope == "admin";
+        if !matches!(
+            query.resource_kind.as_str(),
+            "" | "AVATAR" | "ACCESSORY" | "OUTFIT"
+        ) {
+            return Err(ErrorCode::InvalidMessage);
+        }
         if (!query.model_type.is_empty()
             && !matches!(
                 query.model_type.as_str(),
@@ -430,6 +437,8 @@ impl Storage {
             AND (:scope != 'public' OR m.visibility = 'PUBLIC')
             AND (:scope != 'mine' OR m.uploader_uuid = :actor)
             AND (:scope != 'favorites' OR EXISTS(SELECT 1 FROM library_favorites f WHERE f.model_id = m.model_id AND f.player_uuid = :actor))
+            AND (:resource_kind = '' OR COALESCE((SELECT resource_kind FROM library_resource_kinds k
+                WHERE k.model_id = m.model_id), 'AVATAR') = :resource_kind)
             AND (:category = '' OR m.category_id = :category)
             AND (:type = '' OR m.model_type = :type)
             AND (:status = '' OR m.moderation_status = :status)
@@ -444,6 +453,7 @@ impl Storage {
         self.library_read(|database| {
             let parameters = named_params! {
                 ":actor": actor.uuid.to_string(), ":admin": actor.admin_context, ":scope": scope,
+                ":resource_kind": query.resource_kind,
                 ":category": query.category, ":type": query.model_type, ":status": query.status,
                 ":authorization": query.authorization, ":q": pattern, ":tags": tags,
             };

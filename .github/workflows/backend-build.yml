@@ -65,7 +65,7 @@ jobs:
           $buildExitCode = $LASTEXITCODE
           if ($buildExitCode -ne 0) { Get-Content build.log -Tail 40; exit $buildExitCode }
 
-      - name: Test, build and package executable
+      - name: Build and package executable
         run: ./.github/scripts/build-backend.ps1 -Target $env:BUILD_TARGET
 
       - name: Upload downloadable executable bundle

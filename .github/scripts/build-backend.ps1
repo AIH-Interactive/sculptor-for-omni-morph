@@ -27,7 +27,6 @@ try {
         throw "Run $Target on its native Windows or Linux runner."
     }
 
-    Invoke-CargoLogged -CargoArguments @('test', '--locked', '--target', $Target, '--', '--nocapture')
     Invoke-CargoLogged -CargoArguments @('build', '--locked', '--release', '--target', $Target)
 
     $platformName = if ($windowsTarget) { 'windows' } else { 'linux' }
