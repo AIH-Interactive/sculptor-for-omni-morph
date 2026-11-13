@@ -10,6 +10,7 @@ use std::sync::Arc;
 use tokio::sync::RwLock;
 
 mod admin;
+mod psf;
 mod credits;
 mod catalog;
 mod recycle;
@@ -145,6 +146,9 @@ impl Server {
             )),
             storage,
             transfers: Arc::new(crate::service::resource::Transfers::default()),
+            psf_keys: Arc::new(crate::service::psf::Keys::beside_executable(
+                &directory.path().join("sculptor.exe"),
+            )),
             config: Arc::new(RwLock::new(config)),
             figura_versions: Arc::new(RwLock::new(None)),
         };

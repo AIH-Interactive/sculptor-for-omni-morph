@@ -189,9 +189,16 @@ async fn app() -> Result<bool> {
         storage,
         protocol_sessions,
         transfers: Arc::new(service::resource::Transfers::default()),
+        psf_keys: Arc::new(crate::service::psf::Keys::default()),
         figura_versions: Arc::new(RwLock::new(None)),
         config,
     };
+    if let Err(error) = state.psf_keys.check_configuration() {
+        tracing::warn!(
+            ?error,
+            "PSF key service unavailable; manually provision keys/application.bin beside the executable"
+        );
+    }
 
     // Automatic update of configuration/ban list while the server is running
     tokio::spawn(update_advanced_users(

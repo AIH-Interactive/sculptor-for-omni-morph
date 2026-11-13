@@ -21,6 +21,7 @@ pub struct AppState {
     pub protocol_sessions: Arc<ProtocolSessions>,
     pub storage: Arc<crate::storage::Storage>,
     pub transfers: Arc<crate::service::resource::Transfers>,
+    pub psf_keys: Arc<crate::service::psf::Keys>,
     /// Current configuration
     pub config: Arc<RwLock<super::Config>>,
     /// Caching Figura Versions

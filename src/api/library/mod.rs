@@ -14,6 +14,7 @@ mod collection;
 mod transfers;
 mod uploads;
 mod upload_progress;
+mod psf;
 mod wardrobe;
 mod appeals;
 
@@ -289,6 +290,10 @@ pub(crate) async fn actor_identity(state: &AppState, headers: &HeaderMap) -> Res
 
 pub fn router(state: AppState) -> Router<AppState> {
     Router::new()
+        .route(
+            "/api/library/v1/psf/authorize",
+            post(psf::authorize).layer(DefaultBodyLimit::disable()),
+        )
         .route(
             "/api/library/v1/outfits/current",
             get(outfits::current)

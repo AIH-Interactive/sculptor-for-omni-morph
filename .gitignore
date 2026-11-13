@@ -12,3 +12,7 @@ config.toml
 .env
 perf.data*
 banned-players.json
+
+# PSF secrets are manually provisioned beside the executable.
+/keys/*
+!/keys/.gitkeep

@@ -170,6 +170,7 @@ async fn state(root: &Path) -> AppState {
         )),
         storage,
         transfers: Arc::new(service::resource::Transfers::default()),
+        psf_keys: Arc::new(crate::service::psf::Keys::default()),
         config: Arc::new(RwLock::new(config)),
         figura_versions: Arc::new(RwLock::new(None)),
     }
