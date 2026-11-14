@@ -104,7 +104,7 @@ impl Metadata {
         text(&self.description, 4096, true)?;
         if !matches!(
             self.model_type.as_str(),
-            "FIGURA" | "YSM_PLAIN" | "YSM_ENCRYPTED"
+            "FIGURA" | "YSM_PLAIN" | "YSM_ENCRYPTED" | "PSF"
         ) || !categories.contains(&self.category_id)
             || self.tags.len() > 8
         {
@@ -384,7 +384,7 @@ impl Storage {
         if (!query.model_type.is_empty()
             && !matches!(
                 query.model_type.as_str(),
-                "FIGURA" | "YSM_PLAIN" | "YSM_ENCRYPTED"
+                "FIGURA" | "YSM_PLAIN" | "YSM_ENCRYPTED" | "PSF"
             ))
             || !matches!(query.authorization.as_str(), "" | "required" | "free")
             || (!query.status.is_empty()

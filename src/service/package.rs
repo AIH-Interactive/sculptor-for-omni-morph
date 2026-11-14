@@ -126,6 +126,7 @@ fn modified_utf8(bytes: &[u8]) -> Result<String> {
 
 pub struct PackageIdentity {
     pub model_type: ModelType,
+    pub psf_source: Option<Vec<u8>>,
     pub content_hash: Option<Vec<u8>>,
     pub nbt_sha256: Vec<u8>,
     pub ciphertext_sha256: Option<Vec<u8>>,
@@ -280,6 +281,69 @@ pub(crate) mod tests {
         (encoder.finish().unwrap(), identity)
     }
 
+    pub(crate) fn psf_distribution(source: &[u8], extra: Option<(&str, &[u8])>) -> Vec<u8> {
+        let mut nbt = vec![10, 0, 0, 10];
+        text(&mut nbt, "metadata");
+        string_tag(&mut nbt, "format", "psf-native");
+        string_tag(&mut nbt, "model_type", "PSF");
+        string_tag(&mut nbt, "resource_kind", "AVATAR");
+        string_tag(&mut nbt, "name", "fixture");
+        nbt.push(0);
+        nbt.push(10);
+        text(&mut nbt, "psf");
+        nbt.push(7);
+        text(&mut nbt, "source");
+        nbt.extend_from_slice(&(source.len() as i32).to_be_bytes());
+        nbt.extend_from_slice(source);
+        nbt.push(0);
+        if let Some((field, bytes)) = extra {
+            nbt.push(7);
+            text(&mut nbt, field);
+            nbt.extend_from_slice(&(bytes.len() as i32).to_be_bytes());
+            nbt.extend_from_slice(bytes);
+        }
+        nbt.push(0);
+        let mut encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+        encoder.write_all(&nbt).unwrap();
+        encoder.finish().unwrap()
+    }
+
+    #[test]
+    fn psf_distribution_keeps_native_identity_and_rejects_private_or_plaintext_fields() {
+        let master: [u8; 32] = rand::random();
+        let source = crate::service::psf::tests::fixture(&master);
+        let bytes = psf_distribution(&source, None);
+        let identity = inspect_with_budget(bytes.as_slice(), MAX_DECOMPRESSED).unwrap();
+        assert_eq!(identity.model_type, ModelType::ModelPsf);
+        assert_eq!(identity.content_hash, Some(crate::storage::sha256(&source)));
+        assert_eq!(identity.psf_source, Some(source.clone()));
+        for field in [
+            "key",
+            "application_key",
+            "resources",
+            "models",
+            "textures",
+            "ysm",
+        ] {
+            assert!(matches!(
+                inspect_with_budget(
+                    psf_distribution(&source, Some((field, b"forbidden"))).as_slice(),
+                    MAX_DECOMPRESSED
+                ),
+                Err(ErrorCode::InvalidMessage)
+            ));
+        }
+        let mut damaged = source;
+        damaged[10] = 1;
+        assert!(matches!(
+            inspect_with_budget(
+                psf_distribution(&damaged, None).as_slice(),
+                MAX_DECOMPRESSED
+            ),
+            Err(ErrorCode::InvalidMessage)
+        ));
+    }
+
     #[test]
     fn inspect_container_without_decryption_and_enforce_budgets() {
         for encrypted in [false, true] {
@@ -359,6 +423,10 @@ struct Scanner<R> {
     max_resource: u64,
     max_ciphertext: u64,
     format: String,
+    psf_source: Option<Vec<u8>>,
+    psf_forbidden: bool,
+    psf_model_type: String,
+    resource_kind: String,
     content_hash: Option<Vec<u8>>,
     ciphertext_hash: Option<Vec<u8>>,
     encrypted: bool,
@@ -412,6 +480,10 @@ fn inspect_with_limits(source: impl Read, limits: PackageLimits) -> Result<Packa
         max_resource: limits.max_resource,
         max_ciphertext: limits.max_ciphertext,
         format: String::new(),
+        psf_source: None,
+        psf_forbidden: false,
+        psf_model_type: String::new(),
+        resource_kind: String::new(),
         content_hash: None,
         ciphertext_hash: None,
         encrypted: false,
@@ -437,7 +509,20 @@ fn inspect_with_limits(source: impl Read, limits: PackageLimits) -> Result<Packa
     {
         return Err(ErrorCode::InvalidMessage);
     }
-    let model_type = if scanner.format == "ysm-native" {
+    let model_type = if scanner.format == "psf-native" {
+        let source = scanner.psf_source.as_ref().ok_or(ErrorCode::InvalidMessage)?;
+        if scanner.psf_forbidden || scanner.encrypted || scanner.accessory
+            || scanner.psf_model_type != "PSF" || scanner.resource_kind != "AVATAR"
+            || source.len() < 64 || &source[..8] != b"PSF1PGSF"
+            || source[8..12] != [1, 0, 2, 0] || source[12..16] != [0; 4]
+        {
+            return Err(ErrorCode::InvalidMessage);
+        }
+        scanner.content_hash = Some(crate::storage::sha256(source));
+        ModelType::ModelPsf
+    } else if scanner.psf_source.is_some() {
+        return Err(ErrorCode::InvalidMessage);
+    } else if scanner.format == "ysm-native" {
         if scanner.content_hash.is_none() {
             return Err(ErrorCode::InvalidMessage);
         }
@@ -472,6 +557,7 @@ fn inspect_with_limits(source: impl Read, limits: PackageLimits) -> Result<Packa
         });
     Ok(PackageIdentity {
         model_type,
+        psf_source: scanner.psf_source,
         content_hash: scanner.content_hash,
         nbt_sha256: scanner.nbt_hash.finish().as_ref().to_vec(),
         ciphertext_sha256: scanner.ciphertext_hash,
@@ -596,8 +682,9 @@ impl<R: Read> Scanner<R> {
                 };
                 let length = count.checked_mul(width).ok_or(ErrorCode::LimitExceeded)?;
                 let ciphertext = path == "ysm/source_ciphertext";
+                let psf = path == "psf/source";
                 if length
-                    > if ciphertext {
+                    > if ciphertext || psf {
                         self.max_ciphertext
                     } else {
                         self.max_resource
@@ -605,7 +692,24 @@ impl<R: Read> Scanner<R> {
                 {
                     return Err(self.limit("resource_bytes"));
                 }
-                if ciphertext {
+                if psf {
+                    if kind != 7 || length == 0 {
+                        return Err(ErrorCode::InvalidMessage);
+                    }
+                    let mut bytes = vec![0; length as usize];
+                    self.read(&mut bytes)?;
+                    self.psf_source = Some(bytes);
+                } else if path == "scripts/psf_init" {
+                    let expected = b"vanilla_model.PLAYER:setVisible(false)";
+                    if kind == 7 && length == expected.len() as u64 {
+                        let mut bytes = vec![0; expected.len()];
+                        self.read(&mut bytes)?;
+                        self.psf_forbidden |= bytes != expected;
+                    } else {
+                        self.psf_forbidden = true;
+                        self.skip(length, false)?;
+                    }
+                } else if ciphertext {
                     if kind != 7 || length == 0 {
                         return Err(ErrorCode::InvalidMessage);
                     }
@@ -625,7 +729,11 @@ impl<R: Read> Scanner<R> {
                         self.authors_text = value;
                     }
                     "metadata/format" => self.format = value,
-                    "metadata/resource_kind" => self.accessory = value == "ACCESSORY",
+                    "metadata/model_type" => self.psf_model_type = value,
+                    "metadata/resource_kind" => {
+                        self.accessory = value == "ACCESSORY";
+                        self.resource_kind = value;
+                    }
                     "metadata/cosmetic_json" => {
                         self.cosmetic_manifest = serde_json::from_str::<serde_json::Value>(&value)
                             .is_ok_and(|value| value.is_object());
@@ -665,6 +773,14 @@ impl<R: Read> Scanner<R> {
                     if !names.insert(name.clone()) {
                         return Err(ErrorCode::InvalidMessage);
                     }
+                    self.psf_forbidden |= !match path {
+                        "" => matches!(name.as_str(), "metadata" | "psf" | "scripts"),
+                        "psf" => name == "source" && child == 7,
+                        "scripts" => name == "psf_init" && child == 7,
+                        "metadata" => matches!(name.as_str(), "format" | "model_type" | "resource_kind"
+                            | "name" | "authors" | "description" | "ver" | "uuid" | "color"),
+                        _ => false,
+                    };
                     let wrapper = match path {
                         "" => matches!(name.as_str(), "scripts" | "sounds" | "resources"),
                         "metadata" => matches!(name.as_str(), "resource_kind" | "cosmetic_json"),

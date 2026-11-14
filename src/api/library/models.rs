@@ -49,7 +49,7 @@ pub async fn capabilities(State(state): State<AppState>, headers: HeaderMap) -> 
     let admin_login_available = config.model_library.admins.iter().any(|admin| admin.uuid == player);
     json_response(
         json!({"enabled": true, "version": 1, "max_upload_bytes": config.model_library.max_upload_bytes,
-        "formats": ["zip", "ysm"], "model_types": ["FIGURA", "YSM_PLAIN", "YSM_ENCRYPTED"],
+        "formats": ["zip", "ysm", "psf"], "model_types": ["FIGURA", "YSM_PLAIN", "YSM_ENCRYPTED", "PSF"],
         "outfits_v1": crate::service::outfit::capabilities(&config.outfit.limits),
         "resource_kinds": ["AVATAR", "ACCESSORY", "OUTFIT"],
         "max_page_size": 64,

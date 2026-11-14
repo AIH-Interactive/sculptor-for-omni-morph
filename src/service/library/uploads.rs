@@ -28,6 +28,7 @@ impl Reservation {
             "FIGURA" => ModelType::ModelFigura,
             "YSM_PLAIN" => ModelType::ModelYsmPlain,
             "YSM_ENCRYPTED" => ModelType::ModelYsmEncrypted,
+            "PSF" => ModelType::ModelPsf,
             _ => return Err(ErrorCode::UnsupportedCapability),
         };
         fn digest(text: &str) -> Result<Vec<u8>> {
@@ -65,6 +66,8 @@ impl Reservation {
                 model_type: kind as i32,
                 distribution_format: if kind == ModelType::ModelFigura {
                     DistributionFormat::FiguraCompressedNbt as i32
+                } else if kind == ModelType::ModelPsf {
+                    DistributionFormat::PsfDistributionPackage as i32
                 } else {
                     DistributionFormat::YsmDistributionPackage as i32
                 },
@@ -72,7 +75,7 @@ impl Reservation {
                 raw_length: self.request.byte_length,
                 content_sha256,
                 schema_sha256,
-                required_capabilities: vec![kind as i32],
+                required_capabilities: vec![if kind == ModelType::ModelPsf { 7 } else { kind as i32 }],
                 ..Default::default()
             }),
         })
@@ -134,11 +137,11 @@ impl Storage {
         text(&input.source_filename, 128, false)?;
         let file = input.source_filename.to_ascii_lowercase();
         if input.source_filename.contains(['/', '\\', ':'])
-            || !(file.ends_with(".zip") || file.ends_with(".ysm"))
+            || !(file.ends_with(".zip") || file.ends_with(".ysm") || file.ends_with(".psf"))
             || input.byte_length == 0
             || !matches!(
                 input.metadata_source.as_str(),
-                "avatar.json" | "cosmetic.json" | "ysm.json" | "main.json" | "encrypted_manifest"
+                "avatar.json" | "cosmetic.json" | "ysm.json" | "main.json" | "encrypted_manifest" | "psf_manifest"
             )
             || (input.metadata.model_type == "FIGURA"
                 && input.metadata_source
@@ -151,6 +154,8 @@ impl Storage {
                     })
             || (input.metadata.model_type == "YSM_ENCRYPTED"
                 && input.metadata_source != "encrypted_manifest")
+            || (input.metadata.model_type == "PSF" && (input.metadata_source != "psf_manifest"
+                || input.metadata.resource_kind != super::super::outfit::ResourceKind::Avatar))
         {
             return Err(ErrorCode::InvalidMessage);
         }

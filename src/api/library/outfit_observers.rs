@@ -175,3 +175,34 @@ pub async fn download(
     );
     Ok(response)
 }
+
+/// Keys are scoped to the same current wearer/observer/revision projection as the body.
+pub async fn psf_key(
+    State(state): State<AppState>,
+    Path((owner, id)): Path<(Uuid, String)>,
+    Query(query): Query<ResourceQuery>,
+    headers: HeaderMap,
+) -> Result<Response> {
+    let observer = player(&state, &headers)?;
+    let origin = origin(&headers)?;
+    let descriptor = authorize(
+        &state,
+        owner,
+        observer,
+        origin.clone(),
+        query.revision,
+        id.clone(),
+    )
+    .await?;
+    if descriptor.model_type != crate::protocol::v1::ModelType::ModelPsf as i32 {
+        return Err(ErrorCode::UnsupportedCapability.into());
+    }
+    let path = state.storage.blob_path(&descriptor.raw_sha256)?;
+    let grant = super::psf::consume_stored(&state, &headers, observer, path).await?;
+    if player_identity(&state, &headers)? != observer
+        || authorize(&state, owner, observer, origin, query.revision, id).await? != descriptor
+    {
+        return Err(ErrorCode::Unauthenticated.into());
+    }
+    Ok(super::psf::consumption_response(grant))
+}

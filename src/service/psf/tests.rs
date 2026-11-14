@@ -118,6 +118,45 @@ fn psf_keys_require_manual_configuration_and_bind_exact_purpose_identity_and_exp
         keys.authorize(&source, owner, "session", Purpose::Consumption, 100),
         Err(Error::Forbidden)
     ));
+    let consumption = keys
+        .consume_authorized(&source, owner, "session", 100)
+        .unwrap();
+    assert!(keys
+        .verify(
+            &consumption.grant,
+            owner,
+            "session",
+            &content,
+            Purpose::Consumption,
+            101
+        )
+        .is_ok());
+    assert_eq!(
+        keys.verify(
+            &consumption.grant,
+            owner,
+            "session",
+            &content,
+            Purpose::Publication,
+            101
+        ),
+        Err(Error::Forbidden)
+    );
+    assert_eq!(
+        keys.verify(
+            &consumption.grant,
+            owner,
+            "retired",
+            &content,
+            Purpose::Consumption,
+            101
+        ),
+        Err(Error::Forbidden)
+    );
+    assert!(matches!(
+        keys.consume_authorized(&corrupted, owner, "session", 100),
+        Err(Error::InvalidPackage)
+    ));
     assert!(keys.path.starts_with(directory.path()));
     assert!(
         Keys::beside_executable(&executable)

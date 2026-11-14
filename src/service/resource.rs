@@ -112,6 +112,15 @@ pub async fn grant_upload(
     owner: Uuid,
     request: &UploadRequest,
 ) -> Result<TransferGrant, ErrorCode> {
+    grant_private_upload(state, owner, request, None).await
+}
+
+async fn grant_private_upload(
+    state: &AppState,
+    owner: Uuid,
+    request: &UploadRequest,
+    publication: Option<super::psf::Publication>,
+) -> Result<TransferGrant, ErrorCode> {
     let storage = state.storage.clone();
     let asset = request
         .resource
@@ -122,7 +131,7 @@ pub async fn grant_upload(
     if super::library::work(move || storage.library_asset_bound(owner, &asset)).await? {
         return Err(ErrorCode::Forbidden);
     }
-    grant_upload_inner(state, owner, request, false).await
+    grant_upload_inner(state, owner, request, false, publication).await
 }
 
 pub(crate) async fn grant_library_upload(
@@ -130,7 +139,41 @@ pub(crate) async fn grant_library_upload(
     owner: Uuid,
     request: &UploadRequest,
 ) -> Result<TransferGrant, ErrorCode> {
-    grant_upload_inner(state, owner, request, true).await
+    grant_upload_inner(state, owner, request, true, None).await
+}
+
+pub(crate) async fn grant_psf_upload(
+    state: &AppState,
+    owner: Uuid,
+    request: &UploadRequest,
+    library: bool,
+    publication: super::psf::Publication,
+) -> Result<TransferGrant, ErrorCode> {
+    if library {
+        grant_upload_inner(state, owner, request, true, Some(publication)).await
+    } else {
+        grant_private_upload(state, owner, request, Some(publication)).await
+    }
+}
+
+fn require_psf_publication(
+    keys: &super::psf::Keys,
+    owner: Uuid,
+    descriptor: &AvatarDescriptor,
+    publication: Option<&super::psf::Publication>,
+) -> Result<(), ErrorCode> {
+    if descriptor.model_type == ModelType::ModelPsf as i32 {
+        publication
+            .ok_or(ErrorCode::Forbidden)?
+            .verify(
+                keys,
+                owner,
+                &descriptor.content_sha256,
+                crate::storage::now_seconds(),
+            )
+            .map_err(|_| ErrorCode::Forbidden)?;
+    }
+    Ok(())
 }
 
 async fn grant_upload_inner(
@@ -138,6 +181,7 @@ async fn grant_upload_inner(
     owner: Uuid,
     request: &UploadRequest,
     library: bool,
+    publication: Option<super::psf::Publication>,
 ) -> Result<TransferGrant, ErrorCode> {
     let operation = operation_id(&request.operation_id)?;
     let mut request = request.clone();
@@ -146,8 +190,10 @@ async fn grant_upload_inner(
         return Err(ErrorCode::Forbidden);
     }
     descriptor.owner = owner.to_string();
+    require_psf_publication(&state.psf_keys, owner, descriptor, publication.as_ref())?;
     let expected_format = match ModelType::try_from(descriptor.model_type) {
         Ok(ModelType::ModelFigura) => DistributionFormat::FiguraCompressedNbt,
+        Ok(ModelType::ModelPsf) => DistributionFormat::PsfDistributionPackage,
         Ok(ModelType::ModelYsmPlain | ModelType::ModelYsmEncrypted) => {
             DistributionFormat::YsmDistributionPackage
         }
@@ -170,7 +216,7 @@ async fn grant_upload_inner(
         || descriptor
             .required_capabilities
             .iter()
-            .any(|capability| *capability != descriptor.model_type)
+            .any(|capability| *capability != if descriptor.model_type == 4 { 7 } else { descriptor.model_type })
         || (descriptor.model_type != 1
             && (descriptor.content_sha256.len() != 32 || descriptor.schema_sha256.len() != 32))
     {
@@ -397,7 +443,7 @@ pub async fn commit_upload(
         Err(ErrorCode::NotFound) => {}
         Err(error) => return Err(error),
     }
-    commit_upload_inner(state, owner, request, None, None).await
+    commit_upload_inner(state, owner, request, None, None, None).await
 }
 
 pub(crate) async fn commit_library_upload(
@@ -407,7 +453,28 @@ pub(crate) async fn commit_library_upload(
     context: super::library::uploads::CommitContext,
     progress: Option<UploadProgress>,
 ) -> Result<AvatarDescriptor, ErrorCode> {
-    commit_upload_inner(state, owner, request, Some(context), progress).await
+    commit_upload_inner(state, owner, request, Some(context), progress, None).await
+}
+
+pub(crate) async fn commit_psf_upload(
+    state: &AppState,
+    owner: Uuid,
+    request: &CommitUpload,
+    context: Option<super::library::uploads::CommitContext>,
+    progress: Option<UploadProgress>,
+    publication: super::psf::Publication,
+) -> Result<AvatarDescriptor, ErrorCode> {
+    // The catalog context is mandatory for a catalog reservation, including replay.
+    if context.is_none() {
+        let storage = state.storage.clone();
+        let operation = request.operation_id.clone();
+        match super::library::work(move || storage.library_reservation(owner, &operation)).await {
+            Ok(_) => return Err(ErrorCode::Forbidden),
+            Err(ErrorCode::NotFound) => {}
+            Err(error) => return Err(error),
+        }
+    }
+    commit_upload_inner(state, owner, request, context, progress, Some(publication)).await
 }
 
 async fn commit_upload_inner(
@@ -416,6 +483,7 @@ async fn commit_upload_inner(
     request: &CommitUpload,
     context: Option<super::library::uploads::CommitContext>,
     progress: Option<UploadProgress>,
+    publication: Option<super::psf::Publication>,
 ) -> Result<AvatarDescriptor, ErrorCode> {
     let operation = operation_id(&request.operation_id)?;
     let outfit_limits = state.config.read().await.outfit.limits.clone();
@@ -426,6 +494,7 @@ async fn commit_upload_inner(
     })
     .await?;
     if let Some(completed) = private_completed {
+        require_psf_publication(&state.psf_keys, owner, &completed, publication.as_ref())?;
         if completed.raw_sha256 != request.raw_sha256 || completed.raw_length != request.raw_length {
             return Err(ErrorCode::Conflict);
         }
@@ -438,6 +507,7 @@ async fn commit_upload_inner(
         return Ok(completed);
     }
     if let Some(completed) = state.storage.completed_upload(owner, request)? {
+        require_psf_publication(&state.psf_keys, owner, &completed, publication.as_ref())?;
         if let Some(context) = context {
             let storage = state.storage.clone();
             super::library::work(move || context.check_replay(&storage)).await?;
@@ -475,6 +545,7 @@ async fn commit_upload_inner(
         transfers: state.transfers.clone(),
         key: (owner, operation),
     };
+    require_psf_publication(&state.psf_keys, owner, &descriptor, publication.as_ref())?;
     let mut descriptor = descriptor;
     let source = if path.exists() {
         path.clone()
@@ -532,7 +603,14 @@ async fn commit_upload_inner(
     };
     let storage = state.storage.clone();
     let upload_operation = request.operation_id.clone();
+    let psf_keys = state.psf_keys.clone();
     let committed = super::library::work(move || {
+        require_psf_publication(&psf_keys, owner, &descriptor, publication.as_ref())?;
+        if descriptor.model_type == ModelType::ModelPsf as i32 {
+            let source = inspected.psf_source.as_ref().ok_or(ErrorCode::InvalidMessage)?;
+            psf_keys.authenticate_source(source).map_err(|_| ErrorCode::InvalidMessage)?;
+            require_psf_publication(&psf_keys, owner, &descriptor, publication.as_ref())?;
+        }
         let _publication = storage.lock_blob_files()?;
         storage.publish_staged_locked(&path, &descriptor.raw_sha256, context.is_some())?;
         storage.commit_avatar_with_library(
@@ -645,6 +723,9 @@ async fn import_legacy_if_needed(
     })
     .await
     .map_err(|_| ErrorCode::Internal)??;
+    if identity.model_type == ModelType::ModelPsf {
+        return Err(ErrorCode::InvalidMessage);
+    }
     let model_type = identity.model_type as i32;
     let limits = state.config.read().await.outfit.limits.clone();
     let _publication = state.storage.lock_blob_files()?;
@@ -801,6 +882,10 @@ async fn commit_legacy_staged(
     staged: &std::path::Path,
     inspected: super::package::PackageIdentity,
 ) -> ApiResult<()> {
+    // PSF publication is admitted only through the explicit purpose-bound library flow.
+    if inspected.model_type == ModelType::ModelPsf {
+        return Err(ApiError::BadRequest);
+    }
     let raw_sha256 = raw_file_hash(staged).await.map_err(legacy_error)?;
     let legacy_figura_hash = legacy_file_hash(staged).await.map_err(legacy_error)?;
     let raw_length = fs::metadata(staged).await.map_err(internal_and_log)?.len();
@@ -854,6 +939,9 @@ pub async fn write_legacy(
             .await
             .map_err(|_| ApiError::Internal)?
             .map_err(legacy_error)?;
+    if inspected.model_type == ModelType::ModelPsf {
+        return Err(ApiError::BadRequest);
+    }
     // Windows FlushFileBuffers requires a writable handle for this staged upload.
     fs::OpenOptions::new()
         .write(true)

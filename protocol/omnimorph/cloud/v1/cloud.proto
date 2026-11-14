@@ -50,6 +50,7 @@ enum Capability {
   ENTITY_AUTHORITY = 5;
   // D025: the server validates, stores and forwards YsmState.display.
   YSM_DISPLAY = 6;
+  PSF = 7;
 }
 
 enum ModelType {
@@ -57,12 +58,14 @@ enum ModelType {
   MODEL_FIGURA = 1;
   MODEL_YSM_PLAIN = 2;
   MODEL_YSM_ENCRYPTED = 3;
+  MODEL_PSF = 4;
 }
 
 enum DistributionFormat {
   DISTRIBUTION_FORMAT_UNSPECIFIED = 0;
   FIGURA_COMPRESSED_NBT = 1;
   YSM_DISTRIBUTION_PACKAGE = 2;
+  PSF_DISTRIBUTION_PACKAGE = 3;
 }
 
 enum ErrorCode {

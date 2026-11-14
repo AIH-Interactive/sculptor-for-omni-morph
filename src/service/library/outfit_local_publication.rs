@@ -108,6 +108,7 @@ pub(super) fn prepare(
                 1 => "FIGURA",
                 2 => "YSM_PLAIN",
                 3 => "YSM_ENCRYPTED",
+                4 => "PSF",
                 _ => return Err(ErrorCode::UnsupportedCapability),
             }
             .into(),
@@ -184,6 +185,8 @@ pub(super) fn promote(
             } else {
                 "avatar.json"
             }
+        } else if metadata.model_type == "PSF" {
+            "psf_manifest"
         } else if metadata.model_type == "YSM_ENCRYPTED" {
             "encrypted_manifest"
         } else {

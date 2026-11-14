@@ -16,6 +16,7 @@ fn native_reference(
         1 => "FIGURA",
         2 => "YSM_PLAIN",
         3 => "YSM_ENCRYPTED",
+                4 => "PSF",
         _ => return Err(ErrorCode::UnsupportedCapability),
     };
     let prior: Option<String> = transaction

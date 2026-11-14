@@ -74,6 +74,7 @@ impl LocalBinding {
             "FIGURA" => 1,
             "YSM_PLAIN" => 2,
             "YSM_ENCRYPTED" => 3,
+            "PSF" => 4,
             _ => return Err(ErrorCode::InvalidMessage),
         };
         if faster_hex::hex_string(&raw_hash) != self.raw_sha256 || model_type != expected_type {

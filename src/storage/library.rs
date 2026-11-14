@@ -4,7 +4,7 @@ use rusqlite::{Connection, OptionalExtension, Transaction, params};
 use std::path::Path;
 use uuid::Uuid;
 
-pub(super) const SCHEMA_VERSION: u32 = 12;
+pub(super) const SCHEMA_VERSION: u32 = 13;
 
 pub(crate) fn sql_integer(value: u64) -> Result<i64> {
     i64::try_from(value).map_err(|_| ErrorCode::InvalidMessage)
@@ -141,6 +141,9 @@ fn migrate_transaction(database: &mut Connection, version: u32) -> Result<()> {
             .execute_batch(include_str!("library_images_configurable.sql"))
             .map_err(sql_error)?;
     }
+    if version < 13 {
+        migrate_psf_types(&transaction)?;
+    }
     let violations: bool = transaction
         .query_row(
             "SELECT EXISTS(SELECT 1 FROM pragma_foreign_key_check)",
@@ -156,6 +159,74 @@ fn migrate_transaction(database: &mut Connection, version: u32) -> Result<()> {
         .map_err(sql_error)?;
     transaction.commit().map_err(sql_error)
 }
+
+/// Rebuild only the two format CHECKs, retaining their actual installed columns,
+/// indexes, triggers and dependent view instead of recreating an older schema.
+fn migrate_psf_types(transaction: &Transaction<'_>) -> Result<()> {
+    let mut tables = Vec::new();
+    for table in ["library_models", "outfit_local_resources"] {
+        let schema: String = transaction
+            .query_row(
+                "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = ?1",
+                [table],
+                |row| row.get(0),
+            )
+            .map_err(sql_error)?;
+        if schema.contains("'PSF'") {
+            continue;
+        }
+        let legacy = "'FIGURA','YSM_PLAIN','YSM_ENCRYPTED'";
+        if !schema.contains(legacy) {
+            return Err(ErrorCode::Internal);
+        }
+        let fields = schema.find('(').ok_or(ErrorCode::Internal)?;
+        let definition =
+            schema[fields..].replace(legacy, "'FIGURA','YSM_PLAIN','YSM_ENCRYPTED','PSF'");
+        let mut statement = transaction
+            .prepare(
+                "SELECT sql FROM sqlite_master WHERE tbl_name = ?1
+             AND type IN ('index','trigger') AND sql IS NOT NULL ORDER BY type, name",
+            )
+            .map_err(sql_error)?;
+        let objects = statement
+            .query_map([table], |row| row.get::<_, String>(0))
+            .map_err(sql_error)?
+            .collect::<std::result::Result<Vec<_>, _>>()
+            .map_err(sql_error)?;
+        tables.push((table, definition, objects));
+    }
+    if tables.is_empty() {
+        return Ok(());
+    }
+    let view: Option<String> = transaction.query_row(
+        "SELECT sql FROM sqlite_master WHERE type = 'view' AND name = 'library_effective_models'",
+        [], |row| row.get(0),
+    ).optional().map_err(sql_error)?;
+    if view.is_some() {
+        transaction
+            .execute_batch("DROP VIEW library_effective_models;")
+            .map_err(sql_error)?;
+    }
+    for (table, definition, objects) in tables {
+        let replacement = format!("{table}_psf13");
+        transaction
+            .execute_batch(&format!(
+                "CREATE TABLE {replacement} {definition};
+             INSERT INTO {replacement} SELECT * FROM {table};
+             DROP TABLE {table};
+             ALTER TABLE {replacement} RENAME TO {table};"
+            ))
+            .map_err(sql_error)?;
+        for object in objects {
+            transaction.execute_batch(&object).map_err(sql_error)?;
+        }
+    }
+    if let Some(view) = view {
+        transaction.execute_batch(&view).map_err(sql_error)?;
+    }
+    Ok(())
+}
+
 
 impl Storage {
     /// Call on a bounded blocking worker. Never acquire manifest locks from this closure.
@@ -330,3 +401,122 @@ pub(crate) fn set_blocked(
 
 #[cfg(test)]
 pub(crate) mod tests;
+
+#[cfg(test)]
+mod psf_migration_tests {
+    use super::*;
+
+    #[test]
+    fn psf_upgrade_preserves_legacy_rows_columns_indexes_triggers_foreign_keys_and_reopen() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("metadata.sqlite3");
+        let mut database = Connection::open(&path).unwrap();
+        database.execute_batch("PRAGMA foreign_keys=ON;").unwrap();
+        database
+            .execute_batch(
+                &include_str!("library.sql").replace("'YSM_ENCRYPTED','PSF'", "'YSM_ENCRYPTED'"),
+            )
+            .unwrap();
+        database
+            .execute_batch(
+                &include_str!("outfit_resources.sql")
+                    .replace("'YSM_ENCRYPTED','PSF'", "'YSM_ENCRYPTED'"),
+            )
+            .unwrap();
+        database.execute_batch(
+            "ALTER TABLE library_models ADD COLUMN resource_kind TEXT NOT NULL DEFAULT 'AVATAR';
+             CREATE VIEW library_effective_models AS SELECT * FROM library_models;
+             CREATE TABLE migration_fk (model_id TEXT REFERENCES library_models(model_id));
+             CREATE TABLE migration_audit (model_id TEXT);
+             CREATE TRIGGER migration_trigger AFTER UPDATE ON library_models
+             BEGIN INSERT INTO migration_audit VALUES (NEW.model_id); END;"
+        ).unwrap();
+        for kind in ["FIGURA", "YSM_PLAIN", "YSM_ENCRYPTED"] {
+            database.execute(
+                "INSERT INTO library_models
+                 (model_id,uploader_uuid,uploader_name_snapshot,display_name,internal_name,authors_json,
+                  model_type,category_id,description,visibility,requires_authorization,moderation_status,
+                  current_revision,policy_revision,created_at,updated_at,published)
+                 VALUES (?1,'owner','Owner',?1,?1,'[]',?1,'general','','PUBLIC',0,'ACTIVE',1,1,1,1,1)",
+                [kind],
+            ).unwrap();
+            database
+                .execute("INSERT INTO migration_fk VALUES (?1)", [kind])
+                .unwrap();
+            database
+                .execute(
+                    "INSERT INTO outfit_local_resources VALUES ('owner',?1,?2,?1,'{}')",
+                    params![kind, "a".repeat(64)],
+                )
+                .unwrap();
+        }
+        database.pragma_update(None, "user_version", 12).unwrap();
+        migrate(&mut database, &path, 12).unwrap();
+        assert!(database
+            .pragma_query_value(None, "foreign_keys", |row| row.get::<_, bool>(0))
+            .unwrap());
+        assert_eq!(
+            database
+                .query_row("SELECT COUNT(*) FROM library_effective_models", [], |row| {
+                    row.get::<_, i64>(0)
+                })
+                .unwrap(),
+            3
+        );
+        assert_eq!(
+            database
+                .query_row("SELECT COUNT(*) FROM outfit_local_resources", [], |row| row
+                    .get::<_, i64>(0))
+                .unwrap(),
+            3
+        );
+        assert_eq!(
+            database
+                .query_row("SELECT COUNT(*) FROM pragma_foreign_key_check", [], |row| {
+                    row.get::<_, i64>(0)
+                })
+                .unwrap(),
+            0
+        );
+        database
+            .execute(
+                "UPDATE library_models SET model_type='PSF' WHERE model_id='FIGURA'",
+                [],
+            )
+            .unwrap();
+        assert_eq!(
+            database
+                .query_row("SELECT COUNT(*) FROM migration_audit", [], |row| row
+                    .get::<_, i64>(0))
+                .unwrap(),
+            1
+        );
+        database
+            .execute(
+                "INSERT INTO outfit_local_resources VALUES ('owner','psf',?1,'PSF','{}')",
+                ["b".repeat(64)],
+            )
+            .unwrap();
+        drop(database);
+        let mut reopened = Connection::open(&path).unwrap();
+        migrate(&mut reopened, &path, 13).unwrap();
+        assert_eq!(
+            reopened
+                .query_row(
+                    "SELECT resource_kind FROM library_models WHERE model_id='FIGURA'",
+                    [],
+                    |row| row.get::<_, String>(0)
+                )
+                .unwrap(),
+            "AVATAR"
+        );
+        assert_eq!(
+            reopened
+                .query_row("SELECT COUNT(*) FROM migration_fk", [], |row| row
+                    .get::<_, i64>(0))
+                .unwrap(),
+            3
+        );
+        assert_eq!(reopened.query_row("SELECT COUNT(*) FROM sqlite_master WHERE type='index' AND name LIKE 'library_%'", [], |row| row.get::<_, i64>(0)).unwrap() > 0, true);
+    }
+}

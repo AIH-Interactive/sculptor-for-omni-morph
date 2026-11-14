@@ -44,7 +44,7 @@ pub(crate) fn validate(
     let base = match configuration.base.as_ref() {
         None => "VANILLA",
         Some(ResourceRef::Local { format, .. } | ResourceRef::Cloud { format, .. }) => {
-            if format == "FIGURA" { "FIGURA" } else { "YSM" }
+            if matches!(format.as_str(), "FIGURA" | "PSF") { "FIGURA" } else { "YSM" }
         }
     };
     let mut trails = 0;
@@ -248,6 +248,23 @@ mod tests {
             validate(&configuration, &declarations, &limits),
             Err(ErrorCode::Conflict)
         );
+    }
+
+    #[test]
+    fn psf_base_uses_figura_attachment_family_without_bypassing_author_capabilities() {
+        let (mut configuration, mut declarations) = fixture();
+        configuration.base = Some(ResourceRef::Local {
+            local_id: Uuid::from_u128(99), content_hash: "c".repeat(64), format: "PSF".into(),
+        });
+        let limits = OutfitLimits::default();
+        for declaration in declarations.values_mut() {
+            declaration.supported_bases = vec!["FIGURA".into()];
+        }
+        assert!(validate(&configuration, &declarations, &limits).is_ok());
+        for declaration in declarations.values_mut() {
+            declaration.supported_bases = vec!["YSM".into()];
+        }
+        assert_eq!(validate(&configuration, &declarations, &limits), Err(ErrorCode::UnsupportedCapability));
     }
 
     #[test]

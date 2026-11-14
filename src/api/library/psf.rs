@@ -6,7 +6,7 @@ use axum::{
     extract::State,
 };
 
-fn failure(error: Error) -> LibraryError {
+pub(super) fn failure(error: Error) -> LibraryError {
     let (status, code) = match error {
         Error::KeyUnavailable => (StatusCode::SERVICE_UNAVAILABLE, "PSF_KEY_UNAVAILABLE"),
         Error::KeyLength => (StatusCode::SERVICE_UNAVAILABLE, "PSF_KEY_LENGTH"),
@@ -31,6 +31,40 @@ pub(crate) fn session_binding(headers: &HeaderMap) -> Result<String> {
     Ok(crate::service::psf::digest(
         &[token.as_bytes(), b"\0", epoch, b"\0", mode].concat(),
     ))
+}
+
+pub(crate) fn publication(
+    state: &AppState,
+    headers: &HeaderMap,
+    owner: Uuid,
+    content: &[u8],
+) -> Result<crate::service::psf::Publication> {
+    let token = headers
+        .get("x-omnimorph-psf-grant")
+        .ok_or_else(|| failure(Error::Forbidden))?
+        .to_str()
+        .map_err(|_| ErrorCode::InvalidMessage)?
+        .to_owned();
+    let session = session_binding(headers)?;
+    let current_state = state.clone();
+    let current_headers = headers.clone();
+    let proof = crate::service::psf::Publication::new(
+        token,
+        session,
+        std::sync::Arc::new(move || {
+            super::player_identity(&current_state, &current_headers)
+                .is_ok_and(|current| current == owner)
+        }),
+    );
+    proof
+        .verify(
+            &state.psf_keys,
+            owner,
+            content,
+            crate::storage::now_seconds(),
+        )
+        .map_err(failure)?;
+    Ok(proof)
 }
 
 pub async fn authorize(
@@ -111,4 +145,63 @@ pub async fn authorize(
         .headers_mut()
         .insert("pragma", "no-cache".parse().unwrap());
     Ok(response)
+}
+
+/// Call only after the existing resource consumer has admitted this exact stored path.
+pub(crate) async fn consume_stored(
+    state: &AppState,
+    headers: &HeaderMap,
+    account: Uuid,
+    path: std::path::PathBuf,
+) -> Result<crate::service::psf::KeyGrant> {
+    let _permit = state
+        .psf_keys
+        .preparation_slots
+        .clone()
+        .try_acquire_owned()
+        .map_err(|_| ErrorCode::LimitExceeded)?;
+    let session = session_binding(headers)?;
+    let work_session = session.clone();
+    let keys = state.psf_keys.clone();
+    let result = blocking(move || {
+        let inspected = crate::service::package::inspect(&path)?;
+        if inspected.model_type != crate::protocol::v1::ModelType::ModelPsf {
+            return Err(ErrorCode::UnsupportedCapability);
+        }
+        let source = inspected.psf_source.ok_or(ErrorCode::InvalidMessage)?;
+        Ok(keys.consume_authorized(
+            &source,
+            account,
+            &work_session,
+            crate::storage::now_seconds(),
+        ))
+    })
+    .await?
+    .map_err(failure)?;
+    if super::player_identity(state, headers)? != account || session_binding(headers)? != session {
+        return Err(ErrorCode::Unauthenticated.into());
+    }
+    state
+        .psf_keys
+        .verify(
+            &result.grant,
+            account,
+            &session,
+            &result.content_sha256,
+            Purpose::Consumption,
+            crate::storage::now_seconds(),
+        )
+        .map_err(failure)?;
+    Ok(result)
+}
+
+pub(crate) fn consumption_response(grant: crate::service::psf::KeyGrant) -> Response {
+    let mut response = Json(grant).into_response();
+    response
+        .headers_mut()
+        .insert("cache-control", "no-store".parse().unwrap());
+    response
+        .headers_mut()
+        .insert("pragma", "no-cache".parse().unwrap());
+    response
 }

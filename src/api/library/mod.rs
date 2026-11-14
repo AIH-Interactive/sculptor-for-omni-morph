@@ -305,9 +305,11 @@ pub fn router(state: AppState) -> Router<AppState> {
         .route("/api/library/v1/outfits/instances/:instance/state", post(outfit_state::write))
         .route("/api/library/v1/outfits/players/:owner", get(outfit_observers::snapshot))
         .route("/api/library/v1/outfits/players/:owner/resources/:id", get(outfit_observers::download))
+        .route("/api/library/v1/outfits/players/:owner/resources/:id/psf-key", post(outfit_observers::psf_key))
         .route("/api/library/v1/outfits/resources/local", put(outfits::bind_local))
         .route("/api/library/v1/outfits/resources/local/resolve", post(outfits::resolve_local))
         .route("/api/library/v1/outfits/resources/local/body", post(outfit_local_sources::download))
+        .route("/api/library/v1/outfits/resources/local/psf-key", post(outfit_local_sources::psf_key))
         .route("/api/library/v1/outfits/resources/uploads", post(private_uploads::reserve))
         .route(
             "/api/library/v1/outfits/resources/uploads/:operation/body",
@@ -334,6 +336,7 @@ pub fn router(state: AppState) -> Router<AppState> {
             post(transfers::create),
         )
         .route("/api/library/v1/transfers/:id", get(transfers::download))
+        .route("/api/library/v1/transfers/:id/psf-key", post(transfers::psf_key))
         .route(
             "/api/library/v1/transfers/:id/complete",
             post(transfers::complete),
@@ -429,9 +432,10 @@ async fn dispatch(
         .unwrap_or_else(|| "library".into());
     let result: Result<(Response, usize)> = async {
         let uuid = player_identity(&state, request.headers())?;
-        let binary = method == Method::PUT
+        let binary = (method == Method::PUT
             && (request.uri().path().ends_with("/body")
-                || request.uri().path().ends_with("/image"));
+                || request.uri().path().ends_with("/image")))
+            || (method == Method::POST && route == "/api/library/v1/psf/authorize");
         let (request, request_bytes) = if binary {
             (request, 0)
         } else {

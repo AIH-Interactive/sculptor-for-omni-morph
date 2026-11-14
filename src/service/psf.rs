@@ -57,6 +57,47 @@ pub struct KeyGrant {
     pub version: u32,
 }
 
+/// Ephemeral admission for an HTTP publication. Never serialized into a source or reservation.
+pub(crate) struct Publication {
+    token: String,
+    session: String,
+    current: Arc<dyn Fn() -> bool + Send + Sync>,
+}
+
+impl Publication {
+    pub(crate) fn new(
+        token: String,
+        session: String,
+        current: Arc<dyn Fn() -> bool + Send + Sync>,
+    ) -> Self {
+        Self {
+            token,
+            session,
+            current,
+        }
+    }
+
+    pub(crate) fn verify(
+        &self,
+        keys: &Keys,
+        account: Uuid,
+        content: &[u8],
+        now: u64,
+    ) -> Result<(), Error> {
+        if !(self.current)() || content.len() != 32 {
+            return Err(Error::Forbidden);
+        }
+        keys.verify(
+            &self.token,
+            account,
+            &self.session,
+            &faster_hex::hex_string(content),
+            Purpose::Publication,
+            now,
+        )
+    }
+}
+
 pub struct Keys {
     path: PathBuf,
     signer: hmac::Key,
@@ -99,6 +140,13 @@ impl Keys {
         }
     }
 
+    #[cfg(test)]
+    pub(crate) fn reference(path: PathBuf) -> Self {
+        let mut keys = Self::beside_executable(Path::new("reference/sculptor.exe"));
+        keys.path = path;
+        keys
+    }
+
     pub fn authorize(
         &self,
         source: &[u8],
@@ -111,20 +159,31 @@ impl Keys {
         if purpose == Purpose::Consumption {
             return Err(Error::Forbidden);
         }
-        let mut input = std::fs::File::open(&self.path).map_err(|_| Error::KeyUnavailable)?;
-        let mut master = Vec::with_capacity(33);
-        input
-            .by_ref()
-            .take(33)
-            .read_to_end(&mut master)
-            .map_err(|_| Error::KeyUnavailable)?;
-        if master.len() != 32 {
-            master.fill(0);
-            return Err(Error::KeyLength);
-        }
-        let result = authenticate(source, &master);
-        master.fill(0);
-        let mut package_key = result?;
+        self.issue(source, account, session, purpose, now)
+    }
+
+    /// Only an existing-resource handler may call this, after resolving the
+    /// stored source and checking current access. The arbitrary-source prepare
+    /// endpoint deliberately continues to reject Consumption.
+    pub(crate) fn consume_authorized(
+        &self,
+        source: &[u8],
+        account: Uuid,
+        session: &str,
+        now: u64,
+    ) -> Result<KeyGrant, Error> {
+        self.issue(source, account, session, Purpose::Consumption, now)
+    }
+
+    fn issue(
+        &self,
+        source: &[u8],
+        account: Uuid,
+        session: &str,
+        purpose: Purpose,
+        now: u64,
+    ) -> Result<KeyGrant, Error> {
+        let mut package_key = self.package_key(source)?;
         let claims = Claims {
             account,
             session: session.to_owned(),
@@ -150,6 +209,29 @@ impl Keys {
         };
         package_key.fill(0);
         Ok(response)
+    }
+
+    fn package_key(&self, source: &[u8]) -> Result<[u8; 32], Error> {
+        let mut input = std::fs::File::open(&self.path).map_err(|_| Error::KeyUnavailable)?;
+        let mut master = Vec::with_capacity(33);
+        input
+            .by_ref()
+            .take(33)
+            .read_to_end(&mut master)
+            .map_err(|_| Error::KeyUnavailable)?;
+        if master.len() != 32 {
+            master.fill(0);
+            return Err(Error::KeyLength);
+        }
+        let result = authenticate(source, &master);
+        master.fill(0);
+        result
+    }
+
+    pub(crate) fn authenticate_source(&self, source: &[u8]) -> Result<(), Error> {
+        let mut key = self.package_key(source)?;
+        key.fill(0);
+        Ok(())
     }
 
     pub fn verify(
