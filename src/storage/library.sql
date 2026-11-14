@@ -6,7 +6,7 @@ CREATE TABLE library_models (
     display_name TEXT NOT NULL,
     internal_name TEXT NOT NULL,
     authors_json TEXT NOT NULL,
-    model_type TEXT NOT NULL CHECK(model_type IN ('FIGURA','YSM_PLAIN','YSM_ENCRYPTED','PSF')),
+    model_type TEXT NOT NULL CHECK(model_type IN ('FIGURA','YSM_PLAIN','YSM_ENCRYPTED')),
     category_id TEXT NOT NULL,
     description TEXT NOT NULL,
     visibility TEXT NOT NULL CHECK(visibility IN ('PUBLIC','PRIVATE')),

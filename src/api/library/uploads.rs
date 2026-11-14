@@ -33,18 +33,9 @@ pub async fn reserve(
         metadata.validate_with_limits(&state.config.read().await.outfit.limits)?;
     }
     let filename = input.source_filename.to_ascii_lowercase();
-    if !(filename.ends_with(".zip") || filename.ends_with(".ysm") || filename.ends_with(".psf")) {
+    if !(filename.ends_with(".zip") || filename.ends_with(".ysm")) {
         return Err(LibraryError::unsupported());
     }
-    let publication = if input.metadata.model_type == "PSF" {
-        let content = input.content_sha256.as_deref().ok_or(ErrorCode::InvalidMessage)?;
-        crate::storage::library::validate_hash("RAW_SHA256", content)?;
-        let mut bytes = [0; 32];
-        faster_hex::hex_decode(content.as_bytes(), &mut bytes).map_err(|_| ErrorCode::InvalidMessage)?;
-        Some(super::psf::publication(&state, &headers, actor.uuid, &bytes)?)
-    } else {
-        None
-    };
     let config = state.config.read().await.model_library.clone();
     if input.byte_length > config.max_upload_bytes {
         return Err(LibraryError::too_large());
@@ -67,11 +58,7 @@ pub async fn reserve(
     })
     .await?;
     let descriptor = reservation.descriptor(actor.uuid)?;
-    let grant = if let Some(publication) = publication {
-        resource::grant_psf_upload(&state, actor.uuid, &descriptor, true, publication).await?
-    } else {
-        resource::grant_library_upload(&state, actor.uuid, &descriptor).await?
-    };
+    let grant = resource::grant_library_upload(&state, actor.uuid, &descriptor).await?;
     status["operation_id"] = json!(grant.operation_id);
     status["relative_path"] = json!(format!(
         "/api/library/v1/uploads/{}/body",
@@ -126,16 +113,15 @@ pub async fn commit(
     let input = parse_json(body)?;
     if super::upload_progress::requested(&headers) {
         return super::upload_progress::response(move |progress| {
-            finish_commit(state, actor, headers, operation, input, Some(progress))
+            finish_commit(state, actor, operation, input, Some(progress))
         });
     }
-    json_response(finish_commit(state, actor, headers, operation, input, None).await?)
+    json_response(finish_commit(state, actor, operation, input, None).await?)
 }
 
 async fn finish_commit(
     state: AppState,
     actor: Actor,
-    headers: HeaderMap,
     operation: String,
     input: Mutation,
     progress: Option<resource::UploadProgress>,
@@ -147,23 +133,27 @@ async fn finish_commit(
         return Err(LibraryError::too_large());
     }
     let model_id = reservation.model_id.clone();
-    let descriptor = reservation.descriptor(actor.uuid)?.resource.ok_or(ErrorCode::Internal)?;
-    let publication = if descriptor.model_type == 4 {
-        Some(super::psf::publication(&state, &headers, actor.uuid, &descriptor.content_sha256)?)
-    } else {
-        None
-    };
     let request = crate::protocol::v1::CommitUpload {
         operation_id: operation,
-        raw_sha256: descriptor.raw_sha256,
+        raw_sha256: reservation
+            .descriptor(actor.uuid)?
+            .resource
+            .ok_or(ErrorCode::Internal)?
+            .raw_sha256,
         raw_length: reservation.request.byte_length,
     };
-    let context = CommitContext { actor, reservation, input };
-    if let Some(publication) = publication {
-        resource::commit_psf_upload(&state, actor.uuid, &request, Some(context), progress, publication).await?;
-    } else {
-        resource::commit_library_upload(&state, actor.uuid, &request, context, progress).await?;
-    }
+    resource::commit_library_upload(
+        &state,
+        actor.uuid,
+        &request,
+        CommitContext {
+            actor,
+            reservation,
+            input,
+        },
+        progress,
+    )
+    .await?;
     let storage = state.storage.clone();
     blocking(move || storage.library_upload_status(actor, &model_id)).await
 }

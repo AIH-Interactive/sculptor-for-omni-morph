@@ -166,7 +166,6 @@ async fn legacy_http_baseline() {
         storage,
         protocol_sessions,
         transfers: Arc::new(crate::service::resource::Transfers::default()),
-        psf_keys: Arc::new(crate::service::psf::Keys::default()),
         config: Arc::new(RwLock::new(config)),
         figura_versions: Arc::new(RwLock::new(None)),
     };

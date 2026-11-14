@@ -76,7 +76,6 @@ impl PrivateUpload {
             "FIGURA" => 1,
             "YSM_PLAIN" => 2,
             "YSM_ENCRYPTED" => 3,
-            "PSF" => 4,
             _ => return Err(ErrorCode::InvalidMessage),
         };
         fn digest(value: &str) -> Result<Vec<u8>> {
@@ -110,12 +109,12 @@ impl PrivateUpload {
                 owner: owner.to_string(),
                 asset_id: format!("outfit_{}", self.operation_id.simple()),
                 model_type: kind,
-                distribution_format: match kind { 1 => 1, 4 => 3, _ => 2 },
+                distribution_format: if kind == 1 { 1 } else { 2 },
                 raw_sha256: digest(&self.raw_sha256)?,
                 raw_length: self.byte_length,
                 content_sha256: content,
                 schema_sha256: schema,
-                required_capabilities: vec![if kind == 4 { 7 } else { kind }],
+                required_capabilities: vec![kind],
                 ..Default::default()
             }),
         })

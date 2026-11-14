@@ -46,8 +46,7 @@ impl Client {
                 Capability::YsmPlain as i32,
                 Capability::YsmEncrypted as i32,
                 Capability::YsmRecovery as i32,
-                Capability::YsmDisplay as i32,
-                Capability::Psf as i32
+                Capability::YsmDisplay as i32
             ]
         );
         let request = Envelope {

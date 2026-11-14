@@ -10,7 +10,6 @@ use std::sync::Arc;
 use tokio::sync::RwLock;
 
 mod admin;
-mod psf;
 mod credits;
 mod catalog;
 mod recycle;
@@ -108,10 +107,6 @@ impl Server {
     }
 
     async fn start_with_layout(production: bool) -> Self {
-        Self::start_with_psf(production, None).await
-    }
-
-    async fn start_with_psf(production: bool, psf: Option<Arc<crate::service::psf::Keys>>) -> Self {
         std::sync::LazyLock::force(&LEGACY_DIRECTORY);
         let permit = TEST_SERVERS.clone().acquire_owned().await.unwrap();
         let directory = tempfile::tempdir().unwrap();
@@ -150,9 +145,6 @@ impl Server {
             )),
             storage,
             transfers: Arc::new(crate::service::resource::Transfers::default()),
-            psf_keys: psf.unwrap_or_else(|| Arc::new(crate::service::psf::Keys::beside_executable(
-                &directory.path().join("sculptor.exe"),
-            ))),
             config: Arc::new(RwLock::new(config)),
             figura_versions: Arc::new(RwLock::new(None)),
         };

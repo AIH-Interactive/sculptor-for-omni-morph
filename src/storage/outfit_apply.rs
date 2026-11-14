@@ -207,7 +207,7 @@ fn project_base(manifest: &mut Manifest, owner: Uuid, base: Option<BaseSource>) 
     let reference = descriptor.as_ref().map(asset_ref);
     let compatibility = match descriptor.as_ref().map(|descriptor| descriptor.model_type) {
         Some(1) => reference.clone(),
-        Some(2 | 3 | 4) => account.compatibility.clone(),
+        Some(2 | 3) => account.compatibility.clone(),
         None => None,
         _ => return Err(ErrorCode::UnsupportedCapability),
     };

@@ -131,29 +131,3 @@ pub async fn download(
     );
     Ok(response)
 }
-
-/// The transfer's current preview/download policy is also the key-admission policy.
-pub async fn psf_key(
-    State(state): State<AppState>,
-    Path(id): Path<String>,
-    headers: HeaderMap,
-) -> Result<Response> {
-    let actor = actor(&state, &headers).await?;
-    let storage = state.storage.clone();
-    let transfer = id.clone();
-    let admitted = blocking(move || storage.library_transfer_file(actor, &transfer)).await?;
-    let TransferBody::Model(path) = admitted.body else {
-        return Err(ErrorCode::UnsupportedCapability.into());
-    };
-    let grant = super::psf::consume_stored(&state, &headers, actor.uuid, path).await?;
-    let current_actor = actor_identity(&state, &headers).await?;
-    if current_actor.uuid != actor.uuid {
-        return Err(ErrorCode::Unauthenticated.into());
-    }
-    let storage = state.storage.clone();
-    let current = blocking(move || storage.library_transfer_file(current_actor, &id)).await?;
-    if current.raw_sha256 != admitted.raw_sha256 || current.length != admitted.length {
-        return Err(ErrorCode::Conflict.into());
-    }
-    Ok(super::psf::consumption_response(grant))
-}

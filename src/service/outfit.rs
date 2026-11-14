@@ -154,7 +154,7 @@ impl ResourceRef {
             }
         };
         crate::storage::library::validate_hash("RAW_SHA256", hash)?;
-        if !matches!(format.as_str(), "FIGURA" | "YSM_PLAIN" | "YSM_ENCRYPTED" | "PSF") {
+        if !matches!(format.as_str(), "FIGURA" | "YSM_PLAIN" | "YSM_ENCRYPTED") {
             return Err(ErrorCode::InvalidMessage);
         }
         Ok(())

@@ -32,13 +32,6 @@ pub async fn reserve(
 ) -> Result<Response> {
     let owner = player(&state, &headers)?;
     let input = parse_json(body)?;
-    let publication = if matches!(&input.reference,
-        crate::service::outfit::ResourceRef::Local { format, .. } if format == "PSF") {
-        let descriptor = input.request(owner)?.resource.ok_or(ErrorCode::Internal)?;
-        Some(super::psf::publication(&state, &headers, owner, &descriptor.content_sha256)?)
-    } else {
-        None
-    };
     let config = state.config.read().await;
     if input.byte_length > config.limitations.max_avatar_size.saturating_mul(1000) {
         return Err(LibraryError::too_large());
@@ -65,12 +58,7 @@ pub async fn reserve(
         return json_response(json!({"operation_id": operation, "completed": true,
             "resource": committed(&state, owner, &reserved).await?}));
     }
-    let request = reserved.request(owner)?;
-    let grant = if let Some(publication) = publication {
-        resource::grant_psf_upload(&state, owner, &request, false, publication).await?
-    } else {
-        resource::grant_upload(&state, owner, &request).await?
-    };
+    let grant = resource::grant_upload(&state, owner, &reserved.request(owner)?).await?;
     json_response(json!({"operation_id": operation, "completed": false,
         "relative_path": format!("/api/library/v1/outfits/resources/uploads/{operation}/body"),
         "expires_at": grant.expires_unix_seconds, "max_bytes": grant.max_bytes}))
@@ -129,20 +117,15 @@ pub async fn commit(
         .request(owner)?
         .resource
         .ok_or(ErrorCode::Internal)?;
-    let publication = if descriptor.model_type == 4 {
-        Some(super::psf::publication(&state, &headers, owner, &descriptor.content_sha256)?)
-    } else {
-        None
-    };
-    let request = crate::protocol::v1::CommitUpload {
-        operation_id: operation.to_string(),
-        raw_sha256: descriptor.raw_sha256,
-        raw_length: descriptor.raw_length,
-    };
-    if let Some(publication) = publication {
-        resource::commit_psf_upload(&state, owner, &request, None, None, publication).await?;
-    } else {
-        resource::commit_upload(&state, owner, &request).await?;
-    }
+    resource::commit_upload(
+        &state,
+        owner,
+        &crate::protocol::v1::CommitUpload {
+            operation_id: operation.to_string(),
+            raw_sha256: descriptor.raw_sha256,
+            raw_length: descriptor.raw_length,
+        },
+    )
+    .await?;
     json_response(committed(&state, owner, &reserved).await?)
 }

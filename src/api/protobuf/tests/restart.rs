@@ -165,7 +165,6 @@ impl Restart {
             storage,
             protocol_sessions: sessions,
             transfers: Arc::new(crate::service::resource::Transfers::default()),
-            psf_keys: Arc::new(crate::service::psf::Keys::default()),
             figura_versions: Arc::new(RwLock::new(None)),
             config,
         };

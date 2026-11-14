@@ -230,7 +230,7 @@ impl Storage {
         }
         if !matches!(
             query.model_type.as_str(),
-            "" | "FIGURA" | "YSM_PLAIN" | "YSM_ENCRYPTED" | "PSF"
+            "" | "FIGURA" | "YSM_PLAIN" | "YSM_ENCRYPTED"
         ) || !matches!(query.source.as_str(), "" | "LIBRARY" | "WARDROBE")
         {
             return Err(ErrorCode::InvalidMessage);
@@ -272,7 +272,6 @@ impl Storage {
                     1 => "FIGURA",
                     2 => "YSM_PLAIN",
                     3 => "YSM_ENCRYPTED",
-                4 => "PSF",
                     _ => return Err(ErrorCode::UnsupportedCapability),
                 };
                 if !query.model_type.is_empty() && query.model_type != model_type {

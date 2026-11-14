@@ -186,7 +186,6 @@ pub(super) async fn restart(server: &mut Server) {
         )),
         storage,
         transfers: Arc::new(crate::service::resource::Transfers::default()),
-        psf_keys: Arc::new(crate::service::psf::Keys::default()),
         config: server.state.config.clone(),
         figura_versions: Arc::new(RwLock::new(None)),
     };
