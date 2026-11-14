@@ -4,7 +4,10 @@ use rusqlite::{Connection, OptionalExtension, Transaction, params};
 use std::path::Path;
 use uuid::Uuid;
 
-pub(super) const SCHEMA_VERSION: u32 = 12;
+// Keep the persisted version used by the withdrawn PSF release. Version 13 only
+// widened model-type CHECK constraints; existing Figura/YSM data is compatible.
+// Removing PSF support must not reject databases already migrated to that version.
+pub(super) const SCHEMA_VERSION: u32 = 13;
 
 pub(crate) fn sql_integer(value: u64) -> Result<i64> {
     i64::try_from(value).map_err(|_| ErrorCode::InvalidMessage)
